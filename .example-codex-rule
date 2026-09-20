@@ -1,0 +1,30 @@
+# Copy this rule into a `.rules` file under `~/.codex/rules/`.
+# Replace /ABSOLUTE/HOME with the absolute home directory on this machine.
+# Keep the absolute executable path. A rule for bare `ego` could match another
+# executable earlier in PATH, and a broad `tmux` rule would permit tmux run-shell.
+prefix_rule(
+    pattern=[
+        "/ABSOLUTE/HOME/.ego/bin/ego",
+        [
+            "session-start",
+            "scan",
+            "list",
+            "context",
+            "status",
+            "register",
+            "spawn",
+            "onboard",
+            "onboard-workspace",
+            "handoff",
+            "checkpoint",
+            "stow",
+            "handoff-workspace",
+            "takeback-workspace",
+            "recover",
+            "peek",
+            "send",
+        ],
+    ],
+    decision="allow",
+    justification="Allow the protected Ego controller to access tmux without granting Codex full access",
+)
