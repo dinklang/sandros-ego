@@ -33,28 +33,22 @@ These instructions support macOS and Linux. They assume Codex, Claude Code, or
 another agent CLI is already installed. Ego currently launches Codex and Claude
 directly; other programs can be started with `--command`.
 
-### 1. Install system requirements
+### 1. Check prerequisites
 
-Ego requires Bash, tmux, Git, and standard Unix tools. Agent Navigator requires
-Bash 4 or newer.
+Install these prerequisites using the method appropriate for your environment:
 
-On Debian or Ubuntu:
+- Bash 4 or newer
+- tmux
+- Git
+- Standard Unix tools such as `awk`, `sed`, `find`, and `mktemp`
+- Codex, Claude Code, or another agent CLI
 
-```sh
-sudo apt update
-sudo apt install bash git tmux
-```
-
-On Fedora:
+Verify that the required commands are available before installing Ego:
 
 ```sh
-sudo dnf install bash git tmux
-```
-
-On macOS with Homebrew:
-
-```sh
-brew install bash git tmux
+bash --version
+tmux -V
+git --version
 ```
 
 ### 2. Install Agent Navigator
