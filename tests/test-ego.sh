@@ -5,9 +5,19 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TMP=$(mktemp -d)
 SOCKET="ego-test-$$"
 
-test "$(rg -c "printf 'exec codex --sandbox workspace-write --add-dir" "$ROOT/bin/ego")" -eq 2
+test "$(rg -c "printf 'exec codex --sandbox workspace-write --add-dir" "$ROOT/bin/ego")" -eq 1
+grep -q "printf 'exec kiro-cli chat" "$ROOT/bin/ego"
+# --add-dir is variadic in Claude Code and swallows a trailing prompt.
+grep -q "printf 'exec claude %s --add-dir %s" "$ROOT/bin/ego"
 grep -q 'EGO_CLI_PATH.*session-start' "$ROOT/bin/ego"
+# The controller inherits its session's workspace root, with the neutral state
+# directory only as a fallback.
+grep -q 'controller_dir=$(resolve_session_root "$session"' "$ROOT/bin/ego"
 grep -q 'controller_dir="$EGO_HOME/controller"' "$ROOT/bin/ego"
+# display-message needs "=name:"; the bare "=name" form silently returns nothing.
+grep -q 'display-message -p -t "=$session:" .#{session_path}.' "$ROOT/bin/ego"
+# A session path equal to a workspace root must descend into the session directory.
+grep -q 'refine_workspace_root "$session" "$root"' "$ROOT/bin/ego"
 grep -Fq 'follow $guide' "$ROOT/bin/ego"
 if grep -q 'new-window.*-c "$REPO_ROOT"' "$ROOT/bin/ego"; then
   printf 'controller still starts in the source repository\n' >&2
@@ -40,6 +50,8 @@ test -f "$TMP/ego-root/CONTROLLER.md"
 
 {
   printf '%s\n' '#!/usr/bin/env bash'
+  printf '%s\n' '# Fail unless Ego pointed us at its socket through $TMUX, as the real navigator relies on.'
+  printf '%s\n' 'case "${TMUX:-}" in */'"$SOCKET"',*) ;; *) printf "navigator TMUX=%s\n" "${TMUX:-unset}" >&2; exit 1 ;; esac'
   printf '%s\n' 'tmux -L "$EGO_TMUX_SOCKET" list-panes -a -F $'\''#{pane_id}\t#{window_name}\t#{session_name}:#{window_index}.#{pane_index}'\'' |'
   printf '%s\n' '  awk -F '\''\t'\'' '\''$2 ~ /^agent-/ || $2 == "optimizer" { print $1 "\tcodex\tidle\t" $3 }'\'''
 } > "$EGO_AGENT_NAVIGATOR"
@@ -159,6 +171,30 @@ grep -q '^branch=ego/alpha--isolated$' "$EGO_HOME/agents/alpha--isolated/meta"
 grep -q "^root=$EGO_HOME/worktrees/alpha--isolated$" "$EGO_HOME/agents/alpha--isolated/meta"
 
 "$ROOT/bin/ego" list | grep -q 'alpha--three'
+
+# Kiro is launchable: the fake kiro-cli stands in for the real binary.
+{
+  printf '%s\n' '#!/usr/bin/env bash'
+  printf '%s\n' 'sleep 5'
+} > "$TMP/fake-bin/kiro-cli"
+chmod 700 "$TMP/fake-bin/kiro-cli"
+PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" spawn kiro-worker --session alpha --root "$TMP" --agent kiro --brief "kiro worker" >/dev/null
+grep -q '^agent=kiro$' "$EGO_HOME/agents/alpha--kiro-worker/meta"
+grep -q '^reporting=on$' "$EGO_HOME/agents/alpha--kiro-worker/meta"
+grep -q "^exec kiro-cli chat 'You are worker alpha--kiro-worker" "$EGO_HOME/agents/alpha--kiro-worker/launch.sh"
+grep -q "^cd '$TMP'$" "$EGO_HOME/agents/alpha--kiro-worker/launch.sh"
+if "$ROOT/bin/ego" spawn bad-agent --session alpha --root "$TMP" --agent gemini >/dev/null 2>&1; then
+  printf 'spawn accepted a non-launchable agent\n' >&2
+  exit 1
+fi
+tmux -L "$SOCKET" new-window -d -t alpha: -n kiro-manual -c "$TMP"
+"$ROOT/bin/ego" register alpha:kiro-manual --agent kiro >/dev/null
+grep -q '^agent=kiro$' "$EGO_HOME/agents/alpha--kiro-manual/meta"
+PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" start --session alpha --window ego-kiro --agent kiro >/dev/null
+grep -q "^exec kiro-cli chat 'You are Sandro'\\\\''s Ego" "$EGO_HOME/controller-launch.sh"
+# The controller launches from the session root, not the neutral state directory.
+grep -q "^cd '$TMP'$" "$EGO_HOME/controller-launch.sh"
+tmux -L "$SOCKET" display-message -p -t "=alpha:ego-kiro" '#{pane_current_path}' | grep -qx "$TMP"
 "$ROOT/bin/ego" context | grep -q "Sandro's Ego context"
 "$ROOT/bin/ego" session-start | grep -q "Sandro's Ego context"
 

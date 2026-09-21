@@ -47,7 +47,7 @@ Usage:
   ego register <window|session:window> [--id <id>] [--root <path>]
                          [--agent <type>]
   ego spawn <name> [--session <session>] [--root <path>] [--id <id>]
-                         [--brief <text>] [--agent <codex|claude>]
+                         [--brief <text>] [--agent <codex|claude|kiro>]
                          [--worktree] [--branch <name>]
                          [--command <shell-command>]
   ego onboard <id>
@@ -67,7 +67,7 @@ Usage:
   ego ack <id> <message-id>
   ego report <id> <working|idle|blocked|needs-decision|done|failed|note> <message...>
   ego watch [seconds] [--all]
-  ego start [--session <session>] [--window <name>] [--agent <codex|claude>]
+  ego start [--session <session>] [--window <name>] [--agent <codex|claude|kiro>]
 
 Environment:
   EGO_ROOT          Installation root. Default: ~/.ego
@@ -98,10 +98,10 @@ EOF
     spawn)
       cat <<'EOF'
 Usage: ego spawn <name> [--session <session>] [--root <path>] [--id <id>]
-                 [--brief <text>] [--agent <codex|claude>]
+                 [--brief <text>] [--agent <codex|claude|kiro>]
                  [--worktree] [--branch <name>] [--command <shell-command>]
 
-Create a tracked worker window. Codex is the default agent. --brief is
+Create a tracked worker window. Kiro is the default agent. --brief is
 optional. Inside tmux, --session is optional and defaults to the current
 session. A missing named session is created below @workspace_primary unless
 --root is supplied.
@@ -358,7 +358,43 @@ current_tmux_session() {
 }
 
 valid_agent() {
-  case "$1" in codex|claude|gemini|aider|opencode|unknown) return 0 ;; *) return 1 ;; esac
+  case "$1" in codex|claude|kiro|gemini|aider|opencode|unknown) return 0 ;; *) return 1 ;; esac
+}
+
+# Agents Ego can launch itself. Others are registered or started with --command.
+launchable_agent() {
+  case "$1" in codex|claude|kiro) return 0 ;; *) return 1 ;; esac
+}
+
+agent_executable() {
+  case "$1" in
+    kiro) printf 'kiro-cli\n' ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+# Print the exec line that starts an agent in $root with $prompt. Codex is
+# sandboxed to the workspace plus EGO_HOME; Claude and Kiro rely on their own
+# permission model, so only Codex needs the state directory added explicitly.
+launch_exec_line() {
+  local agent=$1 root=$2 prompt=$3
+  case "$agent" in
+    codex)
+      printf 'exec codex --sandbox workspace-write --add-dir %s -C %s %s\n' \
+        "$(shell_quote "$EGO_HOME")" "$(shell_quote "$root")" "$(shell_quote "$prompt")"
+      ;;
+    claude)
+      # The prompt must precede --add-dir: that option is variadic and would
+      # otherwise consume the prompt as another directory.
+      printf 'cd %s\n' "$(shell_quote "$root")"
+      printf 'exec claude %s --add-dir %s\n' "$(shell_quote "$prompt")" "$(shell_quote "$EGO_HOME")"
+      ;;
+    kiro)
+      printf 'cd %s\n' "$(shell_quote "$root")"
+      printf 'exec kiro-cli chat %s\n' "$(shell_quote "$prompt")"
+      ;;
+    *) die "cannot launch agent type '$agent'" ;;
+  esac
 }
 
 expand_workspace_root() {
@@ -380,6 +416,22 @@ workspace_option() {
 
 path_within() {
   case "$1" in "$2"|"$2"/*) return 0 ;; *) return 1 ;; esac
+}
+
+# A session path equal to a workspace root names the root, not a workspace.
+# Sessions created outside Ego inherit the root as their path, so descend into
+# the session-named directory that 'ego spawn' would have created there.
+refine_workspace_root() {
+  local session=$1 root=$2 base
+  [ -n "$root" ] || return 1
+  for base in "$(workspace_option @workspace_primary)" "$(workspace_option @workspace_secondary)"; do
+    [ -n "$base" ] || continue
+    if [ "${root%/}" = "${base%/}" ] && [ -d "$root/$session" ]; then
+      printf '%s\n' "$root/$session"
+      return 0
+    fi
+  done
+  printf '%s\n' "$root"
 }
 
 workspace_kind() {
@@ -423,7 +475,7 @@ scan_workspaces() {
       root=$(inventory | awk -F '\t' -v s="$session" '$1 == s && $5 != "" { print $5; exit }')
     fi
     [ -d "$root" ] || continue
-    record_workspace "$session" "$root"
+    record_workspace "$session" "$(refine_workspace_root "$session" "$root")"
   done < <(tmux_cmd list-sessions -F "$fmt")
 }
 
@@ -444,21 +496,17 @@ recorded_workspace_root() {
 
 resolve_session_root() {
   local session=$1 root=
-  root=$(tmux_cmd display-message -p -t "=$session" '#{session_path}' 2>/dev/null || true)
-  if [ -d "$root" ]; then
-    printf '%s\n' "$root"
-    return 0
+  # The trailing colon is required: display-message takes a pane target, and the
+  # exact-match "=name" form without it resolves to nothing and exits 0.
+  root=$(tmux_cmd display-message -p -t "=$session:" '#{session_path}' 2>/dev/null || true)
+  if [ ! -d "$root" ]; then
+    root=$(recorded_workspace_root "$session" 2>/dev/null || true)
   fi
-  if root=$(recorded_workspace_root "$session"); then
-    printf '%s\n' "$root"
-    return 0
+  if [ ! -d "$root" ]; then
+    root=$(inventory | awk -F '\t' -v s="$session" '$1 == s && $5 != "" { print $5; exit }')
   fi
-  root=$(inventory | awk -F '\t' -v s="$session" '$1 == s && $5 != "" { print $5; exit }')
-  if [ -d "$root" ]; then
-    printf '%s\n' "$root"
-    return 0
-  fi
-  return 1
+  [ -d "$root" ] || return 1
+  refine_workspace_root "$session" "$root"
 }
 
 pane_snapshot() {
@@ -509,6 +557,19 @@ agent_navigator_path() {
   return 1
 }
 
+# Agent Navigator calls bare tmux, which follows $TMUX. Point it at the same
+# server Ego inspects so pane IDs from an isolated socket never collide with
+# the default server's panes.
+run_agent_navigator() {
+  local socket_path
+  if [ -n "${EGO_TMUX_SOCKET:-}" ]; then
+    socket_path=$(tmux_cmd display-message -p '#{socket_path}') || return 1
+    TMUX="$socket_path,0,0" "$@"
+  else
+    "$@"
+  fi
+}
+
 agent_id_for_pane() {
   local pane=$1 dir meta
   for dir in "$AGENTS_DIR"/*; do
@@ -548,7 +609,7 @@ cmd_scan() {
 
   navigator=$(agent_navigator_path) \
     || die "Agent Navigator is not installed; set EGO_AGENT_NAVIGATOR to its executable"
-  detected=$("$navigator" list) || die "Agent Navigator could not inspect the tmux server"
+  detected=$(run_agent_navigator "$navigator" list) || die "Agent Navigator could not inspect the tmux server"
   controller=$(controller_pane 2>/dev/null || true)
   while IFS=$'\t' read -r pane agent observed _; do
     [ -n "$pane" ] || continue
@@ -918,7 +979,7 @@ cmd_takeback_workspace() {
 
 cmd_spawn() {
   [ $# -ge 1 ] || die "spawn requires a name"
-  local name=$1 session= root= id= brief= command_text= agent=codex agent_set=0 use_worktree=0 branch= window row pane launch prompt source_root repo_top worktree
+  local name=$1 session= root= id= brief= command_text= agent=kiro agent_set=0 use_worktree=0 branch= window row pane launch prompt source_root repo_top worktree
   local created_session=0 primary_root=
   shift
   while [ $# -gt 0 ]; do
@@ -937,10 +998,13 @@ cmd_spawn() {
   if [ -n "$command_text" ] && [ "$agent_set" -eq 0 ]; then
     agent=unknown
   fi
-  case "$agent" in codex|claude|unknown) ;; *) die "--agent must be codex or claude" ;; esac
+  case "$agent" in
+    unknown) ;;
+    *) launchable_agent "$agent" || die "--agent must be codex, claude, or kiro" ;;
+  esac
   if [ -z "$command_text" ]; then
     [ "$agent" != unknown ] || die "unknown agents require --command"
-    command -v "$agent" >/dev/null 2>&1 || die "$agent is not installed"
+    command -v "$(agent_executable "$agent")" >/dev/null 2>&1 || die "$(agent_executable "$agent") is not installed"
   fi
   require_tmux
   ensure_home
@@ -1021,13 +1085,7 @@ cmd_spawn() {
       printf '#!/bin/zsh\n'
       printf 'export EGO_HOME=%s\n' "$(shell_quote "$EGO_HOME")"
       printf 'export EGO_AGENT_ID=%s\n' "$(shell_quote "$id")"
-      if [ "$agent" = codex ]; then
-        printf 'exec codex --sandbox workspace-write --add-dir %s -C %s %s\n' \
-          "$(shell_quote "$EGO_HOME")" "$(shell_quote "$root")" "$(shell_quote "$prompt")"
-      else
-        printf 'cd %s\n' "$(shell_quote "$root")"
-        printf 'exec claude --add-dir %s %s\n' "$(shell_quote "$EGO_HOME")" "$(shell_quote "$prompt")"
-      fi
+      launch_exec_line "$agent" "$root" "$prompt"
     } > "$launch"
   fi
   chmod 700 "$launch"
@@ -1068,8 +1126,11 @@ queue_message() {
   ego_cli="EGO_HOME=$(shell_quote "$EGO_HOME") $(shell_quote "$EGO_CLI_PATH")"
   notice="EGO_INBOX: message $message_id is waiting. Read it with: $ego_cli inbox $id"
   buffer="ego-$id-$$"
+  # Terminal UIs process a paste asynchronously; an immediate Enter can arrive
+  # before the text lands and be dropped, leaving the notice unsubmitted.
   if tmux_cmd set-buffer -b "$buffer" -- "$notice" \
     && tmux_cmd paste-buffer -d -b "$buffer" -t "$pane" \
+    && sleep 0.5 \
     && tmux_cmd send-keys -t "$pane" Enter; then
     :
   else
@@ -1244,7 +1305,7 @@ cmd_watch() {
 }
 
 cmd_start() {
-  local session= window=ego agent=codex row pane launch prompt controller_dir guide
+  local session= window=ego agent=kiro row pane launch prompt controller_dir guide
   while [ $# -gt 0 ]; do
     case "$1" in
       --session) [ $# -ge 2 ] || die "--session requires a value"; session=$2; shift 2 ;;
@@ -1253,11 +1314,10 @@ cmd_start() {
       *) die "unknown start option '$1'" ;;
     esac
   done
-  case "$agent" in codex|claude) ;; *) die "--agent must be codex or claude" ;; esac
-  command -v "$agent" >/dev/null 2>&1 || die "$agent is not installed"
+  launchable_agent "$agent" || die "--agent must be codex, claude, or kiro"
+  command -v "$(agent_executable "$agent")" >/dev/null 2>&1 || die "$(agent_executable "$agent") is not installed"
   require_tmux
   ensure_home
-  controller_dir="$EGO_HOME/controller"
   guide=$CONTROLLER_GUIDE
   [ -f "$guide" ] || guide="$REPO_ROOT/CONTROLLER.md"
   [ -f "$guide" ] || die "controller guide is missing; run 'ego install'"
@@ -1265,6 +1325,11 @@ cmd_start() {
     session=$(tmux_cmd display-message -p '#S')
   fi
   [ -n "$session" ] || die "run start inside tmux or pass --session"
+  # The controller runs from its session's workspace root so its window matches
+  # every other window in that session. The neutral state directory is only a
+  # fallback for a session whose root cannot be resolved.
+  controller_dir=$(resolve_session_root "$session" 2>/dev/null || true)
+  [ -n "$controller_dir" ] && [ -d "$controller_dir" ] || controller_dir="$EGO_HOME/controller"
   if inventory | awk -F '\t' -v s="$session" -v w="$window" '$1 == s && $2 == w { found=1 } END { exit !found }'; then
     die "tmux window $session:$window already exists"
   fi
@@ -1276,13 +1341,7 @@ cmd_start() {
   {
     printf '#!/bin/zsh\n'
     printf 'export EGO_HOME=%s\n' "$(shell_quote "$EGO_HOME")"
-    if [ "$agent" = codex ]; then
-      printf 'exec codex --sandbox workspace-write --add-dir %s -C %s %s\n' \
-        "$(shell_quote "$EGO_HOME")" "$(shell_quote "$controller_dir")" "$(shell_quote "$prompt")"
-    else
-      printf 'cd %s\n' "$(shell_quote "$controller_dir")"
-      printf 'exec claude --add-dir %s %s\n' "$(shell_quote "$EGO_HOME")" "$(shell_quote "$prompt")"
-    fi
+    launch_exec_line "$agent" "$controller_dir" "$prompt"
   } > "$launch"
   chmod 700 "$launch"
   {

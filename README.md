@@ -20,7 +20,7 @@ The prototype can:
 - Start a dedicated Ego agent in a tmux window.
 - Rebuild its view after a restart from tmux and files on disk.
 - Record a recovery checkpoint for each workspace session.
-- Launch Codex or Claude agents.
+- Launch Codex, Claude, or Kiro agents.
 - Queue durable instructions and record worker acknowledgements.
 - Create an optional Git branch and worktree for a spawned agent.
 - Save a compact pre-restart workspace checkpoint.
@@ -30,8 +30,8 @@ Those can be added after the handoff model works well in daily use.
 
 ## First-time installation
 
-These instructions support macOS and Linux. They assume Codex, Claude Code, or
-another agent CLI is already installed. Ego currently launches Codex and Claude
+These instructions support macOS and Linux. They assume Codex, Claude Code, Kiro
+CLI, or another agent CLI is already installed. Ego launches Codex, Claude, and Kiro
 directly; other programs can be started with `--command`.
 
 ### 1. Check prerequisites
@@ -42,7 +42,7 @@ Install these prerequisites using the method appropriate for your environment:
 - tmux
 - Git
 - Standard Unix tools such as `awk`, `sed`, `find`, and `mktemp`
-- Codex, Claude Code, or another agent CLI
+- Codex, Claude Code, Kiro CLI, or another agent CLI
 
 Verify that the required commands are available before installing Ego:
 
@@ -158,6 +158,19 @@ window there:
 ego spawn planner --session ego-test --brief "Wait for instructions."
 ```
 
+To check the supervision path against real agents, run the live integration
+test from the repository. It uses an isolated tmux server and state directory,
+spawns each agent, and verifies that `scan`, `peek`, and `send` work:
+
+```sh
+bash tests/integration-agents.sh            # kiro, claude, and codex
+bash tests/integration-agents.sh kiro       # one agent
+bash tests/integration-agents.sh --strict   # also wait for the worker to ack and report
+```
+
+`--strict` requires the agent to run the `ego` command without a permission
+prompt, so it depends on each tool's own trust configuration.
+
 ### Updating
 
 After updating the repository, reinstall the protected copy and restart the
@@ -184,7 +197,7 @@ ego scan
 ego list
 ```
 
-Detection uses the pane TTY foreground process group, not the window name. It recognizes Codex, Claude, Gemini, Aider, and OpenCode. Register an unsupported custom agent explicitly:
+Detection uses the pane TTY foreground process group, not the window name. It recognizes Codex, Claude, Kiro, Gemini, Aider, and OpenCode. Register an unsupported custom agent explicitly:
 
 ```sh
 ego register project-a:review --id project-a-review
@@ -285,10 +298,10 @@ of those is the intended workspace directory.
 Pass `--root` to create a missing session somewhere else or to override an
 existing session's path. The controller never substitutes its runtime directory
 or the Ego source repository.
-Use `--agent claude` for Claude Code.
-Codex is the default.
+Use `--agent claude` for Claude Code and `--agent kiro` for Kiro CLI.
+Kiro is the default; use `--agent codex` for Codex.
 Other agent programs are outside the supported set for now, although `--command` remains available for experiments.
-Ego starts Codex in `workspace-write` mode and adds `EGO_HOME` as a writable root so the controller and workers can update durable state without full filesystem access.
+Ego starts Codex in `workspace-write` mode and adds `EGO_HOME` as a writable root so the controller and workers can update durable state without full filesystem access. Claude and Kiro use their own permission configuration; Kiro reads its default agent profile and model from `~/.kiro`.
 
 Internally, an agent ID includes the session and window, such as
 `music-generation--planner`. You can avoid typing that ID for individual
@@ -353,8 +366,24 @@ Or put it in a selected session and window:
 ego start --session Main --window ego --agent codex
 ```
 
+The controller window inherits its session's workspace root, the same root every
+other window in that session uses. Start it in a workspace session to supervise
+that workspace from inside it, or in a session with a generic root to supervise
+the whole server from a neutral place.
+
 Ego can see registered agents in every session on the same tmux server.
 You do not need one Ego process per workspace.
+
+To restart the controller in place after a context reset, run its generated
+launch script in the same pane instead of closing the window:
+
+```sh
+~/.ego/state/controller-launch.sh
+```
+
+`ego start` refuses a window that already exists. Run the launch script from
+another pane only after closing the original, because `state/controller.meta`
+still records the old pane.
 
 Ego may also start later. Use `ego scan` and `ego onboard`, or `ego onboard-workspace`, to add agents that already exist.
 
@@ -417,7 +446,7 @@ workspace root                 files the agent edits
 ~/.ego/
   bin/ego                       protected installed command
   CONTROLLER.md                 installed controller instructions
-  state/controller/             neutral controller working directory
+  state/controller/             fallback controller working directory
   state/agents/<id>/meta        tmux and directory location
   state/agents/<id>/brief.md    initial task
   state/agents/<id>/handoff.md  Sandro's current handoff

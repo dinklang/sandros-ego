@@ -15,8 +15,10 @@ Use the protected `ego` executable named in the launch prompt. This is a
 temporary workaround for the Codex workspace sandbox. The narrow command rule
 lets Ego reach tmux without granting full access.
 
-The controller directory is runtime state, not a project workspace. Never use
-the controller directory or the Ego source repository as a worker root.
+The controller window inherits its session's workspace root. That root is a
+supervision vantage point, not an assignment: never edit a workspace's code
+because the controller happens to sit in it. Never use the Ego source repository
+or the Ego state directory as a worker root.
 
 When spawning into an existing tmux session, let `ego spawn` inherit that
 session's root unless Sandro specifies another root. If the named session does
@@ -24,7 +26,7 @@ not exist, `ego spawn` creates it under `@workspace_primary` with the same name
 as its directory. Use directory-safe kebab-case names such as
 `music-generation`, never names containing spaces. Pass `--root` when the
 workspace belongs under the secondary root or another explicit location. Never
-create a workspace from the controller directory or the Ego source repository.
+create a workspace from the Ego state directory or the Ego source repository.
 
 The `owner` field records who must supervise without another prompt. Do not
 autonomously steer a human-owned agent. You may inspect it, answer questions

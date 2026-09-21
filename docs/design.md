@@ -20,10 +20,13 @@ Ego reads the entire server and records the exact session, window, window ID, an
 
 One controller can supervise agents across those sessions.
 The controller's own tmux location does not decide which agents it can see.
-The controller runs from `~/.ego/state/controller`, not from the Ego source
-repository or a project workspace. Its runtime instructions come from the
-installed `~/.ego/CONTROLLER.md`; the repository `AGENTS.md` applies only while
-developing Ego.
+The controller window inherits its session's workspace root, so it matches every
+other window in that session. Starting the controller in a session whose root is
+generic keeps a server-wide controller out of any one project. The neutral
+`~/.ego/state/controller` directory remains the fallback for a session whose root
+cannot be resolved. Its runtime instructions come from the installed
+`~/.ego/CONTROLLER.md`; the repository `AGENTS.md` applies only while developing
+Ego.
 
 Discovery delegates identity to Agent Navigator. It matches recognized processes in each pane TTY's foreground process group, so window names are irrelevant and suspended background agents are excluded. Ego joins the detected pane IDs with its tmux inventory and excludes its own controller pane.
 
