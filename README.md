@@ -16,6 +16,7 @@ The prototype can:
 - Record whether Sandro or Ego currently owns supervision.
 - Store a handoff note and worker status history.
 - Inspect and send text to a registered pane.
+- Press a restricted set of keys for an explicitly authorized terminal prompt.
 - Start a dedicated Ego agent in a tmux window.
 - Rebuild its view after a restart from tmux and files on disk.
 - Record a recovery checkpoint for each workspace session.
@@ -223,6 +224,11 @@ Take control back with:
 ego takeback project-a--profile
 ```
 
+`takeback` prints the latest durable worker report. When the controller handles
+the request, it also inspects the live pane and gives a short return brief. The
+brief is expected controller behavior, not a model-generated feature of the
+ownership change itself.
+
 Hand off a whole workspace with one recovery summary:
 
 ```sh
@@ -263,6 +269,18 @@ If `project-b` does not exist, `spawn` creates both the directory under
 `@workspace_primary` and the tmux session before launching the worker. The
 session and directory use the same name. New names must be directory-safe, so
 use `music-generation` rather than `music generation`.
+
+Ego reads `@workspace_primary` from the running tmux server, not from `.zshrc`.
+Check the effective value with:
+
+```sh
+tmux show-options -gv @workspace_primary
+```
+
+If it is missing or wrong, fix the tmux configuration and reload it before
+creating a workspace. For an existing session, Ego uses tmux's session path,
+then its recorded workspace root, then a live pane path. Pass `--root` when none
+of those is the intended workspace directory.
 
 Pass `--root` to create a missing session somewhere else or to override an
 existing session's path. The controller never substitutes its runtime directory

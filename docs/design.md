@@ -53,6 +53,11 @@ The event log records every report and coordination action. The default watcher 
 
 This keeps continuous reporting separate from continuous model context. The controller can read more history when a question or decision requires it.
 
+Ownership persists after the controller ends a turn, but active monitoring does
+not. The controller must remain in its watch loop when Sandro requests
+supervision through a stated terminal condition. A completed or blocked worker
+normally waits until the controller or Sandro sends another instruction.
+
 ## Reporting boundary
 
 Ego has no background telemetry hook. A spawned or onboarded worker reports by calling `ego report` at material phase changes. The watcher reads Ego's event log rather than scraping every agent conversation.
@@ -60,6 +65,11 @@ Ego has no background telemetry hook. A spawned or onboarded worker reports by c
 Agent Navigator adds on-demand process and screen observation during `ego scan`. It can identify a live agent and estimate `working`, `blocked`, `idle`, or `unknown`, but that estimate does not replace a worker report.
 
 An onboarded worker differs from a spawned worker. It keeps its prior conversation and directory, receives the protocol mid-session, and remains human-owned until handoff. It does not receive a generated brief or isolated worktree. Both use the same inbox and status files after onboarding.
+
+Worker status describes the assigned scope. A worker reports `idle` when it has
+no assignment, `done` when that scope is complete, and `blocked` only when that
+scope cannot proceed. Later project gates belong in the report message and do
+not turn completed work into a blocked assignment.
 
 ## Worktree choice
 

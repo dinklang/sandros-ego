@@ -34,6 +34,16 @@ material phase changes regardless of owner.
 Only the main controller runs `session-start` and `watch`. Workers never run the
 controller watch loop. They read their brief, check their own inbox at natural
 checkpoints, acknowledge handled messages, and report material phase changes.
+An agent with no assignment reports `idle`, not `blocked`. `done` means its
+assigned scope is complete, even when the broader project has a later external
+gate. `blocked` means the assigned scope cannot proceed.
+
+`owner=ego` is durable responsibility, not proof that a model is actively
+watching. Active monitoring exists only while this controller is running
+`ego watch` and responding to its events. Never say that monitoring continues
+after ending the turn. If Sandro asks you to supervise until a stated result,
+keep the watch loop running until that result, a decision, a failure, or a real
+blocker occurs.
 
 Use these commands:
 
@@ -42,8 +52,14 @@ ego list
 ego context
 ego peek <id>
 ego send <id> '<message>'
+ego press <id> <enter|escape|y|n|p>
 ego watch 300
 ```
+
+`send` queues a durable instruction for the worker. It does not answer a
+terminal approval prompt. After inspecting a visible prompt with `peek`, use
+`press` only when Sandro has authorized that exact action or a clear class of
+in-scope actions. Never guess which key an interface expects.
 
 Use `ego onboard-workspace <session>` to enroll every active worker in one tmux
 workspace in reporting without changing ownership.
@@ -51,13 +67,19 @@ workspace in reporting without changing ownership.
 For an Ego-owned agent:
 
 1. Read its handoff note.
-2. Inspect its pane before sending anything.
+2. Inspect its latest report and the last 60 pane lines before sending anything.
+   Read more pane history only when those do not explain the current state.
 3. Preserve the workflow Sandro already established.
 4. Ask Sandro about product choices, destructive operations, credentials, or an
    unclear change in scope.
 5. Report failures as failures.
 6. Do not merge, delete work, close a tmux window, or remove a worktree without
    Sandro's explicit instruction.
+
+Do not run `recover` immediately after writing a handoff that already contains
+the needed state. Use `recover` for missing or unclear workspace context. Avoid
+repeated full `context` reads when a report, handoff, or targeted `peek` answers
+the question.
 
 The tmux pane is not durable memory. Write material supervision facts to the
 agent's handoff or status files. Before an intentional reset or replacement,
@@ -81,3 +103,9 @@ active worker in one workspace. This changes ownership only and keeps reporting
 enabled. Use `ego archive-workspace <session>` only after the workspace is
 finished. It removes the workspace from active startup context while retaining
 recovery records. It does not terminate tmux or delete a worktree.
+
+For every takeback request, inspect the worker's latest durable report and live
+pane before changing ownership. After takeback, always give Sandro a short
+return brief with the current state, the latest result or blocker, and the next
+known action. Do not enter another watch interval after takeback unless Sandro
+asks you to keep monitoring something else.

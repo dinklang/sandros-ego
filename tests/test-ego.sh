@@ -34,6 +34,9 @@ test -x "$TMP/install/ego"
 test "$(cat "$TMP/install/repo-root")" = "$ROOT"
 test -f "$TMP/ego-root/CONTROLLER.md"
 "$TMP/install/ego" --help | grep -q '^  ego install$'
+"$TMP/install/ego" handoff --help | grep -q '^Usage: ego handoff'
+"$TMP/install/ego" report --help | grep -q 'working|idle|blocked|needs-decision|done|failed|note'
+"$TMP/install/ego" press --help | grep -q '^Usage: ego press'
 
 {
   printf '%s\n' '#!/usr/bin/env bash'
@@ -64,6 +67,11 @@ grep -q 'profiling is active' "$EGO_HOME/agents/alpha--agent-one/handoff.md"
 
 "$ROOT/bin/ego" report alpha--agent-one working "baseline started" >/dev/null
 grep -q $'\tworking\tbaseline started$' "$EGO_HOME/agents/alpha--agent-one/status.log"
+"$ROOT/bin/ego" report alpha--agent-one validating "checking output" >/dev/null
+grep -q $'\tworking\tchecking output$' "$EGO_HOME/agents/alpha--agent-one/status.log"
+"$ROOT/bin/ego" report alpha--agent-one waiting "no assignment" >/dev/null
+grep -q $'\tidle\tno assignment$' "$EGO_HOME/agents/alpha--agent-one/status.log"
+"$ROOT/bin/ego" report alpha--agent-one working "baseline started" >/dev/null
 
 "$ROOT/bin/ego" onboard alpha--agent-one >/dev/null
 grep -q '^reporting=on$' "$EGO_HOME/agents/alpha--agent-one/meta"
@@ -72,6 +80,11 @@ test -n "$message"
 "$ROOT/bin/ego" inbox alpha--agent-one | grep -q "MESSAGE $message"
 "$ROOT/bin/ego" ack alpha--agent-one "$message" >/dev/null
 test -f "$EGO_HOME/agents/alpha--agent-one/inbox/handled/$message.msg"
+"$ROOT/bin/ego" press alpha--agent-one enter | grep -q '^pressed enter for alpha--agent-one$'
+if "$ROOT/bin/ego" press alpha--agent-one arbitrary >/dev/null 2>&1; then
+  printf 'press accepted an unrestricted key\n' >&2
+  exit 1
+fi
 
 onboard_output=$("$ROOT/bin/ego" onboard-workspace alpha)
 printf '%s\n' "$onboard_output" | grep -q '^onboarded 1 agents in workspace alpha; 1 already reporting; 0 unavailable$'
@@ -83,7 +96,9 @@ printf '%s\n' "$onboard_output" | grep -q '^onboarded 0 agents in workspace alph
 optimizer_messages_after=$(find "$EGO_HOME/agents/alpha--optimizer/inbox" -maxdepth 1 -name '*.msg' | wc -l | tr -d ' ')
 test "$optimizer_messages_before" -eq "$optimizer_messages_after"
 
-"$ROOT/bin/ego" takeback alpha--agent-one >/dev/null
+takeback_output=$("$ROOT/bin/ego" takeback alpha--agent-one)
+printf '%s\n' "$takeback_output" | grep -q 'latest report:.*working.*baseline started'
+printf '%s\n' "$takeback_output" | grep -q '^reporting remains on$'
 grep -q '^owner=human$' "$EGO_HOME/agents/alpha--agent-one/meta"
 "$ROOT/bin/ego" handoff agent-one --session alpha --summary "short selector" >/dev/null
 grep -q '^owner=ego$' "$EGO_HOME/agents/alpha--agent-one/meta"
@@ -161,6 +176,7 @@ if printf '%s\n' "$watch_output" | grep -q 'quiet progress'; then
   printf 'watch surfaced routine progress\n' >&2
   exit 1
 fi
+"$ROOT/bin/ego" watch 0 | grep -q '^No actionable events within 0 seconds\.$'
 
 tmux -L "$SOCKET" kill-session -t beta
 "$ROOT/bin/ego" archive-workspace beta >/dev/null

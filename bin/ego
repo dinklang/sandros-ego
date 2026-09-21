@@ -62,9 +62,10 @@ Usage:
   ego takeback <id|window> [--session <session>]
   ego peek <id> [lines]
   ego send <id> <message...>
+  ego press <id> <enter|escape|y|n|p>
   ego inbox <id>
   ego ack <id> <message-id>
-  ego report <id> <working|blocked|needs-decision|done|failed|note> <message...>
+  ego report <id> <working|idle|blocked|needs-decision|done|failed|note> <message...>
   ego watch [seconds] [--all]
   ego start [--session <session>] [--window <name>] [--agent <codex|claude>]
 
@@ -74,6 +75,68 @@ Environment:
   EGO_AGENT_NAVIGATOR  Agent Navigator executable. Default: installed helper.
   EGO_TMUX_SOCKET   Optional tmux socket name, useful for isolated servers.
 EOF
+}
+
+command_usage() {
+  case "$1" in
+    handoff)
+      cat <<'EOF'
+Usage: ego handoff <id|window> [--session <session>] --summary <text> [--next <text>]
+
+Give Ego continuing supervision responsibility for one worker. The command
+does not restart or steer the worker. --summary is required; --next is optional.
+EOF
+      ;;
+    takeback)
+      cat <<'EOF'
+Usage: ego takeback <id|window> [--session <session>]
+
+Return supervision responsibility to Sandro. Reporting stays enabled. The
+command prints the worker's latest durable report when one exists.
+EOF
+      ;;
+    spawn)
+      cat <<'EOF'
+Usage: ego spawn <name> [--session <session>] [--root <path>] [--id <id>]
+                 [--brief <text>] [--agent <codex|claude>]
+                 [--worktree] [--branch <name>] [--command <shell-command>]
+
+Create a tracked worker window. Codex is the default agent. --brief is
+optional. Inside tmux, --session is optional and defaults to the current
+session. A missing named session is created below @workspace_primary unless
+--root is supplied.
+EOF
+      ;;
+    report)
+      cat <<'EOF'
+Usage: ego report <id> <working|idle|blocked|needs-decision|done|failed|note> <message...>
+
+Append a material worker status update to durable state. Common phase words are
+normalized: investigating and validating become working, waiting becomes idle,
+complete becomes done, and error becomes failed.
+EOF
+      ;;
+    watch)
+      cat <<'EOF'
+Usage: ego watch [seconds] [--all]
+
+Wait for an actionable event. The default timeout is 300 seconds. A timeout
+prints a quiet-period message and exits successfully. --all also wakes for
+routine events.
+EOF
+      ;;
+    press)
+      cat <<'EOF'
+Usage: ego press <id> <enter|escape|y|n|p>
+
+Send one allowed key to a worker's live terminal UI. Inspect the pane first.
+Use this for an explicit interactive prompt, never for a worker instruction.
+EOF
+      ;;
+    *)
+      usage
+      ;;
+  esac
 }
 
 cmd_install() {
@@ -353,8 +416,49 @@ scan_workspaces() {
   fmt=$'#{session_name}\t#{session_path}'
   while IFS= read -r row; do
     IFS=$'\t' read -r session root <<< "$row"
+    if [ ! -d "$root" ]; then
+      root=$(recorded_workspace_root "$session" 2>/dev/null || true)
+    fi
+    if [ ! -d "$root" ]; then
+      root=$(inventory | awk -F '\t' -v s="$session" '$1 == s && $5 != "" { print $5; exit }')
+    fi
+    [ -d "$root" ] || continue
     record_workspace "$session" "$root"
   done < <(tmux_cmd list-sessions -F "$fmt")
+}
+
+recorded_workspace_root() {
+  local wanted=$1 dir meta root
+  for dir in "$WORKSPACES_DIR"/*; do
+    [ -d "$dir" ] || continue
+    meta="$dir/meta"
+    [ -f "$meta" ] || continue
+    [ "$(meta_get "$meta" session)" = "$wanted" ] || continue
+    root=$(meta_get "$meta" root)
+    [ -d "$root" ] || return 1
+    printf '%s\n' "$root"
+    return 0
+  done
+  return 1
+}
+
+resolve_session_root() {
+  local session=$1 root=
+  root=$(tmux_cmd display-message -p -t "=$session" '#{session_path}' 2>/dev/null || true)
+  if [ -d "$root" ]; then
+    printf '%s\n' "$root"
+    return 0
+  fi
+  if root=$(recorded_workspace_root "$session"); then
+    printf '%s\n' "$root"
+    return 0
+  fi
+  root=$(inventory | awk -F '\t' -v s="$session" '$1 == s && $5 != "" { print $5; exit }')
+  if [ -d "$root" ]; then
+    printf '%s\n' "$root"
+    return 0
+  fi
+  return 1
 }
 
 pane_snapshot() {
@@ -784,6 +888,13 @@ cmd_takeback() {
   meta_set "$meta" updated_at "$(now)"
   append_event takeback "$id" "returned to Sandro"
   printf 'returned %s to human control\n' "$id"
+  if [ -s "${meta%/meta}/status.log" ]; then
+    printf 'latest report: '
+    tail -n 1 "${meta%/meta}/status.log"
+  else
+    printf 'latest report: none recorded\n'
+  fi
+  printf 'reporting remains %s\n' "$(meta_get "$meta" reporting)"
 }
 
 cmd_takeback_workspace() {
@@ -857,9 +968,10 @@ cmd_spawn() {
     die "tmux window $session:$window already exists"
   fi
   if [ -z "$root" ]; then
-    root=$(tmux_cmd display-message -p -t "=$session" '#{session_path}')
+    root=$(resolve_session_root "$session" || true)
   fi
-  [ -d "$root" ] || die "root '$root' is not a directory"
+  [ -d "$root" ] \
+    || die "cannot determine a directory for tmux session '$session'; pass --root or fix the recorded workspace root"
   id=${id:-$(clean_id "$session--$window")}
   valid_id "$id" || die "invalid agent id '$id'"
   source_root=$root
@@ -904,7 +1016,7 @@ cmd_spawn() {
       printf 'exec /bin/zsh -lc %s\n' "$(shell_quote "$command_text")"
     } > "$launch"
   else
-    prompt="You are worker $id, tracked through Sandro's Ego. Read $AGENTS_DIR/$id/brief.md. Work in $root. Report material phase changes regardless of who is supervising with: $EGO_CLI_PATH report $id <state> <message>. Check pending instructions at natural checkpoints with: $EGO_CLI_PATH inbox $id. Acknowledge each handled message with: $EGO_CLI_PATH ack $id <message-id>. Do not claim completion until the requested result is complete."
+    prompt="You are worker $id, tracked through Sandro's Ego. Read $AGENTS_DIR/$id/brief.md. Work in $root. Report material phase changes regardless of who is supervising with: $EGO_CLI_PATH report $id <working|idle|blocked|needs-decision|done|failed|note> <message>. Use idle when no task is assigned. Use done when your assigned scope is complete, even if the broader project has a later external gate. Use blocked only when the assigned scope cannot proceed. Check pending instructions at natural checkpoints with: $EGO_CLI_PATH inbox $id. Acknowledge each handled message with: $EGO_CLI_PATH ack $id <message-id>. Do not claim completion until the requested result is complete."
     {
       printf '#!/bin/zsh\n'
       printf 'export EGO_HOME=%s\n' "$(shell_quote "$EGO_HOME")"
@@ -976,6 +1088,23 @@ cmd_send() {
   printf 'queued %s for %s\n' "$message_id" "$id"
 }
 
+cmd_press() {
+  [ $# -eq 2 ] || die "press requires an agent id and one allowed key"
+  local id=$1 requested=$2 meta pane key
+  meta=$(agent_meta "$id")
+  pane=$(meta_get "$meta" pane_id)
+  pane_snapshot "$pane" >/dev/null || die "agent '$id' has no live pane"
+  case "$requested" in
+    enter) key=Enter ;;
+    escape|esc) key=Escape ;;
+    y|n|p) key=$requested ;;
+    *) die "press key must be enter, escape, y, n, or p" ;;
+  esac
+  tmux_cmd send-keys -t "$pane" "$key"
+  append_event pressed "$id" "$requested"
+  printf 'pressed %s for %s\n' "$requested" "$id"
+}
+
 cmd_inbox() {
   [ $# -eq 1 ] || die "inbox requires one agent id"
   local meta dir file found=0 message_id
@@ -1009,7 +1138,7 @@ cmd_onboard() {
   local id=$1 meta message message_id ego_cli
   meta=$(agent_meta "$id")
   ego_cli="EGO_HOME=$(shell_quote "$EGO_HOME") $(shell_quote "$EGO_CLI_PATH")"
-  message="Join Ego's reporting protocol while keeping the current human workflow. Report only material phase changes with: $ego_cli report $id <working|blocked|needs-decision|done|failed|note> <message>. Check instructions at natural checkpoints with: $ego_cli inbox $id. Acknowledge each handled instruction with: $ego_cli ack $id <message-id>. Reporting stays active whether owner is human or ego."
+  message="Join Ego's reporting protocol while keeping the current human workflow. Report only material phase changes with: $ego_cli report $id <working|idle|blocked|needs-decision|done|failed|note> <message>. Use idle when no task is assigned. Use done when your assigned scope is complete, even if the broader project has a later external gate. Use blocked only when the assigned scope cannot proceed. Check instructions at natural checkpoints with: $ego_cli inbox $id. Acknowledge each handled instruction with: $ego_cli ack $id <message-id>. Reporting stays active whether owner is human or ego."
   message_id=$(queue_message "$id" "$message")
   meta_set "$meta" reporting on
   meta_set "$meta" updated_at "$(now)"
@@ -1066,7 +1195,14 @@ cmd_report() {
   local id=$1 state=$2 meta dir message
   shift 2
   message=$*
-  case "$state" in working|blocked|needs-decision|done|failed|note) ;; *) die "invalid state '$state'" ;; esac
+  case "$state" in
+    investigating|validating) state=working ;;
+    waiting) state=idle ;;
+    complete|completed) state=done ;;
+    error) state=failed ;;
+    working|idle|blocked|needs-decision|done|failed|note) ;;
+    *) die "invalid state '$state'; run 'ego report --help' for accepted states" ;;
+  esac
   meta=$(agent_meta "$id")
   dir=${meta%/meta}
   printf '%s\t%s\t%s\n' "$(now)" "$state" "$(one_line "$message")" >> "$dir/status.log"
@@ -1104,7 +1240,7 @@ cmd_watch() {
     fi
     sleep 1
   done
-  return 2
+  printf 'No actionable events within %s seconds.\n' "$timeout"
 }
 
 cmd_start() {
@@ -1159,8 +1295,15 @@ cmd_start() {
 
 command_name=${1:-help}
 [ $# -eq 0 ] || shift
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  command_usage "$command_name"
+  exit 0
+fi
 case "$command_name" in
-  help|-h|--help) usage ;;
+  help)
+    if [ $# -gt 0 ]; then command_usage "$1"; else usage; fi
+    ;;
+  -h|--help) usage ;;
   install) cmd_install "$@" ;;
   init) cmd_init "$@" ;;
   scan) cmd_scan "$@" ;;
@@ -1182,6 +1325,7 @@ case "$command_name" in
   takeback) cmd_takeback "$@" ;;
   peek) require_tmux; cmd_peek "$@" ;;
   send) require_tmux; cmd_send "$@" ;;
+  press) require_tmux; cmd_press "$@" ;;
   inbox) cmd_inbox "$@" ;;
   ack) cmd_ack "$@" ;;
   report) cmd_report "$@" ;;
