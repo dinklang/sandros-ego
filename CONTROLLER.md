@@ -59,7 +59,7 @@ autonomously steer a human-owned agent. You may inspect it, answer questions
 about it, and steer it when Sandro asks. All reporting-enabled agents report
 material phase changes regardless of owner.
 
-Only the main controller runs `session-start` and `watch`. Workers never run the
+Only a controller runs `session-start` and `watch`. Workers never run the
 controller watch loop. They read their brief, check their own inbox at natural
 checkpoints, acknowledge handled messages, and report material phase changes.
 An agent with no assignment reports `idle`, not `blocked`. `done` means its

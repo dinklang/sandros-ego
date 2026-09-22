@@ -12,13 +12,14 @@ The durable inbox carries instructions to workers. Status logs carry material re
 This supports workflows that develop during the work.
 The agent can keep its existing conversation, shell state, and working directory when ownership changes.
 
-## One controller, many workspaces
+## Controllers, workspaces, and scope
 
 One tmux server may contain many workspace sessions.
 Each session has its own session path and agent windows.
 Ego reads the entire server and records the exact session, window, window ID, and pane ID for each agent.
 
-One controller can supervise agents across those sessions.
+A controller can be scoped to one workspace or to the whole server, and several
+can run at once.
 The controller window inherits its session's workspace root, so it matches every
 other window in that session. Starting the controller in a session whose root is
 generic keeps a server-wide controller out of any one project. The neutral
@@ -93,11 +94,12 @@ Before an intentional controller reset, `ego stow` records only the volatile wor
 
 A record can outlive what it describes. A tmux pane id is never reused, so a
 recorded pane that is absent from the inventory is permanently gone, and `ego
-scan` retires that agent. Workspace records are written only from live sessions,
-so a record for a session that no longer exists would otherwise never be
-revisited; `scan` marks it `live=no`, and `ego prune` archives it once its
-directory is also gone. A killed session whose directory survives stays recorded
-because it is still resumable.
+scan` retires that agent. The same rule retires a controller record whose pane is
+gone, which also removes that controller's event cursor. Workspace records are
+written only from live sessions, so a record for a session that no longer exists
+would otherwise never be revisited; `scan` marks it `live=no`, and `ego prune`
+archives it once its directory is also gone. A killed session whose directory
+survives stays recorded because it is still resumable.
 
 Retirement is deliberate, so a refresh preserves it. Only `register` and `spawn`
 return a record to active context. Without that, a rescan would silently undo
@@ -129,10 +131,12 @@ A pane can outlive the agent that ran in it. `scan` records `process=yes` or
 starting an agent in the same pane again reuses the same pane id. Pane liveness
 and process presence are separate columns in `ego list`.
 
-`ego watch` persists one cursor per caller. Without it, each call sampled the
-event log from the present and lost anything reported while the controller was
-between calls. The cursor is per caller so one controller consuming an event
-cannot hide it from another.
+`ego watch` persists one cursor per caller, written as soon as the starting
+position is known. Without a cursor, each call sampled the event log from the
+present and lost anything reported while the controller was between calls; without
+the early write, a call that returned empty left no cursor and the next one
+sampled from the present again. The cursor is per caller so one controller
+consuming an event cannot hide it from another.
 
 An onboarded worker differs from a spawned worker. It keeps its prior conversation and directory, receives the protocol mid-session, and remains human-owned until handoff. It does not receive a generated brief or isolated worktree. Both use the same inbox and status files after onboarding.
 
@@ -154,4 +158,6 @@ The agent that creates a worker chooses isolation from the task. Independent edi
 - Better completion signals for Codex and other agent commands.
 - Explicit cleanup after work has landed.
 - Small workflow templates for profiling, optimization, review, and test runs.
-- Optional workspace-scoped mini Ego processes if one controller becomes too broad.
+- `owner` naming which controller supervises a worker, instead of the two-value
+  `human` or `ego` field, so a handoff can be addressed and a retired
+  controller's workers can be reassigned.

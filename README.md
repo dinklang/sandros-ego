@@ -352,6 +352,10 @@ lands while the controller is busy is surfaced by the next watch call instead of
 being missed. The first watch of a session starts from the present and does not
 replay an old log.
 
+Every event records the session it belongs to, so a session-scoped controller
+wakes only for its own workspace. An event that names no session, such as a
+fleet-wide `scan`, reaches every controller.
+
 ## Finish a workspace
 
 Skipping `stow` avoids a new checkpoint, but it does not remove an older checkpoint. After the tmux session is finished, remove it from active controller context without deleting its records:
@@ -366,9 +370,10 @@ This archives the checkpoint, marks its agent records inactive, and returns thei
 
 A tmux pane id is never reused, so a pane that disappears is gone for good.
 `ego scan` retires the record of any agent whose pane has vanished, which keeps
-dead workers out of every later context read. A workspace record is only written
-from live tmux sessions, so `scan` also marks a record `live=no` when its session
-is gone.
+dead workers out of every later context read. The same rule applies to a
+controller record, and retiring one also drops its event cursor. A workspace
+record is only written from live tmux sessions, so `scan` also marks a record
+`live=no` when its session is gone.
 
 Retire the records a scan cannot judge on its own with:
 
@@ -396,11 +401,12 @@ Use `ego list` to see the difference: the `STATE` column reads `live` or
 agent process in that pane, and `ego list active` hides retired records
 entirely. A pane can be `live` with `process=no`, meaning the window is still
 open but its agent has exited. Ego keeps that record, because starting an agent
-in the same pane again reuses it.
+in the same pane again reuses it. `ego controllers` is the same view for
+controller records.
 
 ## Start Ego
 
-Start one controller near the beginning of your work session:
+Start a controller near the beginning of your work session:
 
 ```sh
 ego start
@@ -531,8 +537,9 @@ A replacement controller begins with `ego session-start`. That command scans tmu
 
 The checkpoint does not need a second model session.
 It survives even if tmux or Ego stops.
-A later version can add one mini Ego per workspace if separate supervisors prove useful.
-For now, one Ego can supervise all sessions while the per-workspace files keep recovery local and clear.
+A session-scoped controller per workspace and one server-scoped controller above
+them are both supported, and the per-workspace files keep recovery local and
+clear either way.
 
 ## Your tmux workspace roots
 

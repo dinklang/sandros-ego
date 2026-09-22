@@ -39,7 +39,7 @@ if grep -q 'new-window.*-c "$REPO_ROOT"' "$ROOT/bin/ego"; then
   printf 'controller still starts in the source repository\n' >&2
   exit 1
 fi
-grep -q 'Only the main controller runs `session-start` and `watch`' "$ROOT/CONTROLLER.md"
+grep -q 'Only a controller runs `session-start` and `watch`' "$ROOT/CONTROLLER.md"
 if grep -q 'ego watch' "$ROOT/AGENTS.md"; then
   printf 'development AGENTS.md contains controller watch instructions\n' >&2
   exit 1
