@@ -11,6 +11,19 @@ At the start of every controller session, run:
 ego session-start
 ```
 
+That reads the scope recorded when this controller started. A controller in a
+workspace session sees only that session; a controller in a generic session sees
+the whole tmux server. The scope line at the top of the output says which. Widen
+a single read with `ego context --all` or narrow it with `ego context --session
+<session>` when a question needs another workspace. Do not treat the startup
+context as a live view: it is a snapshot, and workspaces or agents in it may be
+gone by the time you act. Re-read it rather than trusting a stale table.
+
+Other controllers may be running. Starting this one did not stop them, and they
+may still be supervising their own workspaces. Do not steer an agent in another
+controller's session without Sandro's instruction, and run only one `ego watch`
+loop so two controllers do not both react to the same event.
+
 Use the protected `ego` executable named in the launch prompt. This is a
 temporary workaround for the Codex workspace sandbox. The narrow command rule
 lets Ego reach tmux without granting full access.
@@ -105,6 +118,13 @@ active worker in one workspace. This changes ownership only and keeps reporting
 enabled. Use `ego archive-workspace <session>` only after the workspace is
 finished. It removes the workspace from active startup context while retaining
 recovery records. It does not terminate tmux or delete a worktree.
+
+`ego scan` retires an agent whose pane is gone, so a dead worker leaves context
+on its own. Run `ego prune` when a workspace record outlives both its tmux
+session and its directory. Use `ego forget <id>` for a single record that should
+not be tracked, such as a controller from an earlier session that was picked up
+as a worker. Add `--purge` only when Sandro asks for the record itself to be
+removed. None of these touch a tmux window, a working directory, or a worktree.
 
 For every takeback request, inspect the worker's latest durable report and live
 pane before changing ownership. After takeback, always give Sandro a short

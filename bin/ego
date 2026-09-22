@@ -42,8 +42,10 @@ Usage:
   ego scan
   ego list
   ego workspaces
-  ego context
-  ego session-start
+  ego context [--session <session>] [--all]
+  ego session-start [--session <session>] [--all]
+  ego prune [--session <session>]
+  ego forget <id> [--purge]
   ego register <window|session:window> [--id <id>] [--root <path>]
                          [--agent <type>]
   ego spawn <name> [--session <session>] [--root <path>] [--id <id>]
@@ -68,6 +70,7 @@ Usage:
   ego report <id> <working|idle|blocked|needs-decision|done|failed|note> <message...>
   ego watch [seconds] [--all]
   ego start [--session <session>] [--window <name>] [--agent <codex|claude|kiro>]
+                         [--scope <session|server>]
 
 Environment:
   EGO_ROOT          Installation root. Default: ~/.ego
@@ -123,6 +126,10 @@ Usage: ego watch [seconds] [--all]
 Wait for an actionable event. The default timeout is 300 seconds. A timeout
 prints a quiet-period message and exits successfully. --all also wakes for
 routine events.
+
+Each caller keeps its own cursor, so an event that arrives between two watch
+calls is surfaced by the next one instead of being missed. The first watch of a
+session starts from the present and does not replay an old log.
 EOF
       ;;
     press)
@@ -131,6 +138,38 @@ Usage: ego press <id> <enter|escape|y|n|p>
 
 Send one allowed key to a worker's live terminal UI. Inspect the pane first.
 Use this for an explicit interactive prompt, never for a worker instruction.
+EOF
+      ;;
+    prune)
+      cat <<'EOF'
+Usage: ego prune [--session <session>]
+
+Retire records that no longer describe anything running. An agent whose pane is
+gone becomes inactive, and a workspace whose tmux session and directory are both
+gone becomes archived. Records are retained for recovery; nothing is deleted and
+no tmux window or worktree is touched. 'ego scan' retires missing agent panes on
+its own, so prune is mainly for workspace records.
+EOF
+      ;;
+    forget)
+      cat <<'EOF'
+Usage: ego forget <id> [--purge]
+
+Retire one agent record. The default marks it inactive so it leaves startup
+context while staying available to 'ego recover'. --purge removes the record
+directory, including its brief, handoff, status log, and inbox, and refuses
+while the pane is still live. Neither form touches the tmux window or a worktree.
+EOF
+      ;;
+    context|session-start)
+      cat <<'EOF'
+Usage: ego context [--session <session>] [--all]
+       ego session-start [--session <session>] [--all]
+
+Print startup context. Scope defaults to the value recorded by 'ego start':
+a controller in a workspace session sees only that session, a controller in a
+generic session sees the whole server. --session narrows to one session and
+--all forces the whole server. session-start scans tmux first.
 EOF
       ;;
     *)
@@ -248,7 +287,7 @@ resolve_target() {
 
 record_agent() {
   local id=$1 row=$2 root_override=${3:-} owner_override=${4:-} agent_override=${5:-} reporting_override=${6:-}
-  local session window window_id pane_id cwd command session_path pane_index pane_pid pane_tty root workspace_root dir meta created owner agent reporting origin tmp
+  local session window window_id pane_id cwd command session_path pane_index pane_pid pane_tty root workspace_root dir meta created owner agent reporting origin active last_seen tmp
   local existing_root= existing_workspace_root= source_root= worktree= branch=
   IFS=$'\t' read -r session window window_id pane_id cwd command session_path pane_index pane_pid pane_tty <<< "$row"
   valid_id "$id" || die "invalid agent id '$id'"
@@ -260,6 +299,8 @@ record_agent() {
   agent=unknown
   reporting=unknown
   origin=human
+  active=yes
+  last_seen=
   if [ -f "$meta" ]; then
     created=$(meta_get "$meta" created_at)
     owner=$(meta_get "$meta" owner)
@@ -273,6 +314,11 @@ record_agent() {
     worktree=$(meta_get "$meta" worktree)
     branch=$(meta_get "$meta" branch)
     origin=$(meta_get "$meta" origin)
+    # Retirement is deliberate, so a refresh preserves it. Only 'register' and
+    # 'spawn' put a record back into active context.
+    active=$(meta_get "$meta" active)
+    [ -n "$active" ] || active=yes
+    last_seen=$(meta_get "$meta" last_seen)
     if [ -z "$origin" ]; then
       if [ -f "$dir/launch.sh" ]; then origin=ego; else origin=human; fi
     fi
@@ -306,7 +352,8 @@ record_agent() {
     printf 'owner=%s\n' "$owner"
     printf 'reporting=%s\n' "$reporting"
     printf 'origin=%s\n' "$origin"
-    printf 'active=yes\n'
+    printf 'active=%s\n' "$active"
+    [ -z "$last_seen" ] || printf 'last_seen=%s\n' "$last_seen"
     printf 'created_at=%s\n' "$created"
     printf 'updated_at=%s\n' "$(now)"
   } > "$tmp"
@@ -320,6 +367,8 @@ register_target() {
   IFS=$'\t' read -r session window _ <<< "$row"
   id=${requested_id:-$(clean_id "$session--$window")}
   record_agent "$id" "$row" "$root" "" "$agent"
+  # Registering is an explicit request to track, so it reverses a retirement.
+  meta_set "$AGENTS_DIR/$id/meta" active yes
 }
 
 agent_meta() {
@@ -327,6 +376,18 @@ agent_meta() {
   meta="$AGENTS_DIR/$id/meta"
   [ -f "$meta" ] || die "unknown agent '$id'; run 'ego scan' or 'ego register' first"
   printf '%s\n' "$meta"
+}
+
+# Mark one agent record inactive. Returns 1 when it already was, so callers can
+# count only the records this pass actually changed. Records are never deleted
+# here: 'ego recover' must still be able to read a retired worker's history.
+retire_agent_record() {
+  local meta=$1
+  [ "$(meta_get "$meta" active)" != no ] || return 1
+  meta_set "$meta" active no
+  meta_set "$meta" last_seen "$(meta_get "$meta" updated_at)"
+  meta_set "$meta" updated_at "$(now)"
+  return 0
 }
 
 agent_id_in_session() {
@@ -448,23 +509,50 @@ workspace_kind() {
 }
 
 record_workspace() {
-  local session=$1 root=$2 id dir tmp
+  local session=$1 root=$2 live=${3:-yes} id dir tmp state= archived_at=
   id=$(clean_id "$session")
   dir="$WORKSPACES_DIR/$id"
   mkdir -p "$dir"
+  # An explicit archive outlives a rescan: the tmux session may still exist
+  # after the work is finished, and re-activating it would undo the retirement.
+  if [ -f "$dir/meta" ]; then
+    state=$(meta_get "$dir/meta" state)
+    archived_at=$(meta_get "$dir/meta" archived_at)
+  fi
+  [ -n "$state" ] || state=active
   tmp=$(mktemp "$dir/.meta.XXXXXX")
   {
     printf 'session=%s\n' "$session"
     printf 'root=%s\n' "$root"
     printf 'kind=%s\n' "$(workspace_kind "$root")"
-    printf 'state=active\n'
+    printf 'state=%s\n' "$state"
+    printf 'live=%s\n' "$live"
+    [ -z "$archived_at" ] || printf 'archived_at=%s\n' "$archived_at"
     printf 'updated_at=%s\n' "$(now)"
   } > "$tmp"
   mv "$tmp" "$dir/meta"
 }
 
+# Workspaces are recorded from live tmux sessions, so a record whose session is
+# gone is never revisited and would otherwise stay in context forever.
+mark_dead_workspaces() {
+  local live_sessions=$1 dir meta session
+  for dir in "$WORKSPACES_DIR"/*; do
+    [ -d "$dir" ] || continue
+    meta="$dir/meta"
+    [ -f "$meta" ] || continue
+    session=$(meta_get "$meta" session)
+    if printf '%s\n' "$live_sessions" | grep -Fxq -- "$session"; then
+      continue
+    fi
+    [ "$(meta_get "$meta" live)" != no ] || continue
+    meta_set "$meta" live no
+    meta_set "$meta" updated_at "$(now)"
+  done
+}
+
 scan_workspaces() {
-  local fmt row session root
+  local fmt row session root live_sessions
   fmt=$'#{session_name}\t#{session_path}'
   while IFS= read -r row; do
     IFS=$'\t' read -r session root <<< "$row"
@@ -475,8 +563,10 @@ scan_workspaces() {
       root=$(inventory | awk -F '\t' -v s="$session" '$1 == s && $5 != "" { print $5; exit }')
     fi
     [ -d "$root" ] || continue
-    record_workspace "$session" "$(refine_workspace_root "$session" "$root")"
+    record_workspace "$session" "$(refine_workspace_root "$session" "$root")" yes
   done < <(tmux_cmd list-sessions -F "$fmt")
+  live_sessions=$(tmux_cmd list-sessions -F '#{session_name}')
+  mark_dead_workspaces "$live_sessions"
 }
 
 recorded_workspace_root() {
@@ -510,9 +600,13 @@ resolve_session_root() {
 }
 
 pane_snapshot() {
-  local pane=$1 fmt
+  local pane=$1 fmt out
   fmt=$'#{session_name}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}'
-  tmux_cmd display-message -p -t "$pane" "$fmt" 2>/dev/null
+  out=$(tmux_cmd display-message -p -t "$pane" "$fmt" 2>/dev/null) || return 1
+  # A stale pane id makes display-message print empty fields and still exit 0,
+  # so an empty first field is the only reliable signal that the pane is gone.
+  case "$out" in ''|$'\t'*) return 1 ;; esac
+  printf '%s\n' "$out"
 }
 
 cmd_init() {
@@ -522,7 +616,7 @@ cmd_init() {
 
 cmd_register() {
   [ $# -ge 1 ] || die "register requires a tmux window"
-  local selector=$1 id= root= agent=unknown
+  local selector=$1 id= root= agent=
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -532,7 +626,9 @@ cmd_register() {
       *) die "unknown register option '$1'" ;;
     esac
   done
-  valid_agent "$agent" || die "unsupported agent type '$agent'"
+  # An omitted --agent must not overwrite a type Agent Navigator already
+  # detected, so the override stays empty rather than defaulting to unknown.
+  [ -z "$agent" ] || valid_agent "$agent" || die "unsupported agent type '$agent'"
   ensure_home
   id=$(register_target "$selector" "$id" "$root" "$agent")
   append_event registered "$id" "$selector"
@@ -592,7 +688,7 @@ controller_pane() {
 cmd_scan() {
   require_tmux
   ensure_home
-  local all_rows navigator detected row session window pane pane_index id agent observed controller= count=0 dir meta existing_pane
+  local all_rows navigator detected row session window pane pane_index id agent observed controller= count=0 retired=0 dir meta existing_pane detected_panes=
   scan_workspaces
   all_rows=$(inventory)
 
@@ -602,7 +698,14 @@ cmd_scan() {
     [ -f "$meta" ] || continue
     existing_pane=$(meta_get "$meta" pane_id)
     row=$(printf '%s\n' "$all_rows" | awk -F '\t' -v p="$existing_pane" '$4 == p { print; exit }')
-    [ -n "$row" ] || continue
+    # A tmux pane id is never reused, so an absent pane is permanently gone.
+    # Retiring the record here keeps dead agents out of every later context read.
+    if [ -z "$row" ]; then
+      if retire_agent_record "$meta"; then
+        retired=$((retired + 1))
+      fi
+      continue
+    fi
     id=$(meta_get "$meta" id)
     record_agent "$id" "$row" >/dev/null
   done
@@ -628,36 +731,74 @@ cmd_scan() {
     record_agent "$id" "$row" "" "" "$agent" >/dev/null
     meta="$AGENTS_DIR/$id/meta"
     meta_set "$meta" observed_state "$observed"
+    detected_panes="$detected_panes$pane"$'\n'
     count=$((count + 1))
   done <<< "$detected"
-  append_event scan fleet "$count detected agent panes"
-  printf 'registered or refreshed %s detected agent panes\n' "$count"
+
+  # A pane can outlive the agent that ran in it, and a new agent can start in the
+  # same pane later. Record whether a process is running instead of retiring the
+  # record, so a restarted agent needs no re-registration.
+  for dir in "$AGENTS_DIR"/*; do
+    [ -d "$dir" ] || continue
+    meta="$dir/meta"
+    [ -f "$meta" ] || continue
+    if printf '%s' "$detected_panes" | grep -Fxq -- "$(meta_get "$meta" pane_id)"; then
+      meta_set "$meta" process yes
+    else
+      meta_set "$meta" process no
+    fi
+  done
+  append_event scan fleet "$count detected agent panes, $retired retired"
+  if [ "$retired" -gt 0 ]; then
+    printf 'registered or refreshed %s detected agent panes; retired %s whose pane is gone\n' "$count" "$retired"
+  else
+    printf 'registered or refreshed %s detected agent panes\n' "$count"
+  fi
+}
+
+# Decide whether one workspace record belongs in startup context. An archived
+# workspace is retired by hand; a record whose tmux session is gone describes
+# nothing running. Both stay readable through 'ego workspaces' and 'ego recover'.
+workspace_in_context() {
+  local meta=$1 filter=$2
+  [ "$(meta_get "$meta" state)" != archived ] || return 1
+  [ "$(meta_get "$meta" live)" != no ] || return 1
+  [ -z "$filter" ] || [ "$(meta_get "$meta" session)" = "$filter" ] || return 1
+  return 0
 }
 
 cmd_workspaces() {
   ensure_home
-  local active_only=${1:-} dir meta state
-  printf 'SESSION\tKIND\tROOT\n'
+  local active_only=${1:-} filter=${2:-} dir meta live
+  printf 'SESSION\tKIND\tLIVE\tSTATE\tROOT\n'
   for dir in "$WORKSPACES_DIR"/*; do
     [ -d "$dir" ] || continue
     meta="$dir/meta"
     [ -f "$meta" ] || continue
-    state=$(meta_get "$meta" state)
-    [ "$active_only" != active ] || [ "$state" != archived ] || continue
-    printf '%s\t%s\t%s\n' "$(meta_get "$meta" session)" "$(meta_get "$meta" kind)" "$(meta_get "$meta" root)"
+    if [ "$active_only" = active ]; then
+      workspace_in_context "$meta" "$filter" || continue
+    elif [ -n "$filter" ] && [ "$(meta_get "$meta" session)" != "$filter" ]; then
+      continue
+    fi
+    live=$(meta_get "$meta" live)
+    [ -n "$live" ] || live=unknown
+    printf '%s\t%s\t%s\t%s\t%s\n' "$(meta_get "$meta" session)" "$(meta_get "$meta" kind)" \
+      "$live" "$(meta_get "$meta" state)" "$(meta_get "$meta" root)"
   done
 }
 
 cmd_list() {
   ensure_home
-  local active_only=${1:-} dir meta id pane owner reporting origin active session window cwd command agent live
-  printf 'ID\tOWNER\tREPORTING\tORIGIN\tSTATE\tAGENT\tTARGET\tCWD\tCOMMAND\n'
+  local active_only=${1:-} filter=${2:-} dir meta id pane owner reporting origin active session window cwd command agent live process
+  printf 'ID\tOWNER\tREPORTING\tORIGIN\tSTATE\tPROCESS\tAGENT\tTARGET\tCWD\tCOMMAND\n'
   for dir in "$AGENTS_DIR"/*; do
     [ -d "$dir" ] || continue
     meta="$dir/meta"
     [ -f "$meta" ] || continue
     active=$(meta_get "$meta" active)
     [ "$active_only" != active ] || [ "$active" != no ] || continue
+    session=$(meta_get "$meta" session)
+    [ -z "$filter" ] || [ "$session" = "$filter" ] || continue
     id=$(meta_get "$meta" id)
     pane=$(meta_get "$meta" pane_id)
     owner=$(meta_get "$meta" owner)
@@ -666,34 +807,65 @@ cmd_list() {
     origin=$(meta_get "$meta" origin)
     [ -n "$origin" ] || origin=human
     agent=$(meta_get "$meta" agent)
-    session=$(meta_get "$meta" session)
     window=$(meta_get "$meta" window)
     live=missing
+    process=$(meta_get "$meta" process)
+    [ -n "$process" ] || process=unknown
     cwd=$(meta_get "$meta" cwd)
     command=$(meta_get "$meta" command)
     if snap=$(pane_snapshot "$pane"); then
       live=live
       IFS=$'\t' read -r _ _ cwd command <<< "$snap"
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s:%s\t%s\t%s\n' "$id" "$owner" "$reporting" "$origin" "$live" "$agent" "$session" "$window" "$cwd" "$command"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s:%s\t%s\t%s\n' "$id" "$owner" "$reporting" "$origin" \
+      "$live" "$process" "$agent" "$session" "$window" "$cwd" "$command"
   done
+}
+
+# The scope recorded by 'ego start'. Prints the session a controller should
+# restrict itself to, or nothing when it supervises the whole server.
+controller_scope_session() {
+  local meta="$EGO_HOME/controller.meta"
+  [ -f "$meta" ] || return 0
+  [ "$(meta_get "$meta" scope)" = session ] || return 0
+  meta_get "$meta" session
 }
 
 cmd_context() {
   ensure_home
-  printf '# Sandro\x27s Ego context\n\nGenerated: %s\n\n' "$(now)"
+  local filter= chosen=0 all=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --session) [ $# -ge 2 ] || die "--session requires a value"; filter=$2; chosen=1; shift 2 ;;
+      --all) all=1; chosen=1; shift ;;
+      *) die "unknown context option '$1'" ;;
+    esac
+  done
+  if [ "$chosen" -eq 0 ]; then
+    filter=$(controller_scope_session)
+  elif [ "$all" -eq 1 ]; then
+    filter=
+  fi
+  printf '# Sandro\x27s Ego context\n\nGenerated: %s\n' "$(now)"
+  if [ -n "$filter" ]; then
+    printf 'Scope: session %s. Run `ego context --all` for every session on this server.\n\n' "$filter"
+  else
+    printf 'Scope: every session on this tmux server.\n\n'
+  fi
   printf '## Workspaces\n\n'
-  cmd_workspaces active
+  cmd_workspaces active "$filter"
   local workspace_dir checkpoint
   for workspace_dir in "$WORKSPACES_DIR"/*; do
     [ -d "$workspace_dir" ] || continue
+    [ -f "$workspace_dir/meta" ] || continue
+    workspace_in_context "$workspace_dir/meta" "$filter" || continue
     checkpoint="$workspace_dir/checkpoint.md"
     [ -f "$checkpoint" ] || continue
     printf '\n'
     cat "$checkpoint"
   done
   printf '\n## Agents\n\n'
-  cmd_list active
+  cmd_list active "$filter"
   local dir meta id owner reporting active handoff status
   for dir in "$AGENTS_DIR"/*; do
     [ -d "$dir" ] || continue
@@ -701,6 +873,7 @@ cmd_context() {
     [ -f "$meta" ] || continue
     active=$(meta_get "$meta" active)
     [ "$active" != no ] || continue
+    [ -z "$filter" ] || [ "$(meta_get "$meta" session)" = "$filter" ] || continue
     id=$(meta_get "$meta" id)
     owner=$(meta_get "$meta" owner)
     reporting=$(meta_get "$meta" reporting)
@@ -724,7 +897,7 @@ cmd_context() {
 cmd_session_start() {
   require_tmux
   cmd_scan >/dev/null
-  cmd_context
+  cmd_context "$@"
 }
 
 write_workspace_checkpoint() {
@@ -781,20 +954,107 @@ cmd_stow() {
   printf 'stowed workspace %s\n' "$WORKSPACE_SESSION"
 }
 
+archive_workspace_checkpoint() {
+  local dir=$1 stamp
+  [ -f "$dir/checkpoint.md" ] || return 0
+  stamp=$(date -u '+%Y%m%dT%H%M%SZ')
+  mkdir -p "$dir/archive"
+  mv "$dir/checkpoint.md" "$dir/archive/$stamp.md"
+}
+
+cmd_prune() {
+  local filter= dir meta session root all_rows pane live_sessions agents=0 spaces=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --session) [ $# -ge 2 ] || die "--session requires a value"; filter=$2; shift 2 ;;
+      *) die "unknown prune option '$1'" ;;
+    esac
+  done
+  require_tmux
+  ensure_home
+  all_rows=$(inventory)
+  live_sessions=$(tmux_cmd list-sessions -F '#{session_name}')
+
+  for dir in "$AGENTS_DIR"/*; do
+    [ -d "$dir" ] || continue
+    meta="$dir/meta"
+    [ -f "$meta" ] || continue
+    [ -z "$filter" ] || [ "$(meta_get "$meta" session)" = "$filter" ] || continue
+    pane=$(meta_get "$meta" pane_id)
+    if printf '%s\n' "$all_rows" | awk -F '\t' -v p="$pane" '$4 == p { found=1 } END { exit !found }'; then
+      continue
+    fi
+    if retire_agent_record "$meta"; then
+      agents=$((agents + 1))
+    fi
+  done
+
+  mark_dead_workspaces "$live_sessions"
+  for dir in "$WORKSPACES_DIR"/*; do
+    [ -d "$dir" ] || continue
+    meta="$dir/meta"
+    [ -f "$meta" ] || continue
+    session=$(meta_get "$meta" session)
+    [ -z "$filter" ] || [ "$session" = "$filter" ] || continue
+    [ "$(meta_get "$meta" state)" != archived ] || continue
+    [ "$(meta_get "$meta" live)" = no ] || continue
+    # A killed session whose directory survives is resumable, so only a
+    # workspace with neither a session nor a directory is archived here.
+    root=$(meta_get "$meta" root)
+    [ ! -d "$root" ] || continue
+    archive_workspace_checkpoint "$dir"
+    meta_set "$meta" state archived
+    meta_set "$meta" archived_at "$(now)"
+    meta_set "$meta" updated_at "$(now)"
+    spaces=$((spaces + 1))
+  done
+
+  append_event prune "${filter:-fleet}" "$agents agent records retired, $spaces workspace records archived"
+  printf 'retired %s agent records and archived %s workspace records\n' "$agents" "$spaces"
+}
+
+cmd_forget() {
+  local id= purge=0 meta dir pane
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --purge) purge=1; shift ;;
+      --*) die "unknown forget option '$1'" ;;
+      *) [ -z "$id" ] || die "forget accepts one agent id"; id=$1; shift ;;
+    esac
+  done
+  [ -n "$id" ] || die "forget requires an agent id"
+  valid_id "$id" || die "invalid agent id '$id'"
+  ensure_home
+  meta=$(agent_meta "$id")
+  dir=${meta%/meta}
+  pane=$(meta_get "$meta" pane_id)
+  if [ "$purge" -eq 1 ]; then
+    if command -v tmux >/dev/null 2>&1 && tmux_cmd list-sessions >/dev/null 2>&1 \
+      && pane_snapshot "$pane" >/dev/null 2>&1; then
+      die "agent '$id' still has a live pane; retire it without --purge, or close its window first"
+    fi
+    rm -rf -- "$dir"
+    append_event forgotten "$id" "record purged"
+    printf 'purged the record for %s\n' "$id"
+    return 0
+  fi
+  if retire_agent_record "$meta"; then
+    append_event forgotten "$id" "record retired"
+    printf 'retired %s; its records remain available to recover\n' "$id"
+  else
+    printf '%s was already retired\n' "$id"
+  fi
+}
+
 cmd_archive_workspace() {
   [ $# -eq 1 ] || die "archive-workspace requires one session"
   ensure_home
-  local session=$1 workspace_id workspace_dir meta stamp archive_file dir agent_meta_file count=0
+  local session=$1 workspace_id workspace_dir meta dir agent_meta_file count=0
   workspace_id=$(clean_id "$session")
   workspace_dir="$WORKSPACES_DIR/$workspace_id"
   meta="$workspace_dir/meta"
   [ -f "$meta" ] || die "unknown workspace '$session'"
-  stamp=$(date -u '+%Y%m%dT%H%M%SZ')
-  mkdir -p "$workspace_dir/archive"
-  if [ -f "$workspace_dir/checkpoint.md" ]; then
-    archive_file="$workspace_dir/archive/$stamp.md"
-    mv "$workspace_dir/checkpoint.md" "$archive_file"
-  fi
+  archive_workspace_checkpoint "$workspace_dir"
   meta_set "$meta" state archived
   meta_set "$meta" archived_at "$(now)"
   for dir in "$AGENTS_DIR"/*; do
@@ -1064,6 +1324,7 @@ cmd_spawn() {
     record_agent "$id" "$row" "$root" ego "$agent" on >/dev/null
   fi
   meta_set "$AGENTS_DIR/$id/meta" origin ego
+  meta_set "$AGENTS_DIR/$id/meta" active yes
   if [ -n "$worktree" ]; then
     meta_set "$AGENTS_DIR/$id/meta" source_root "$source_root"
     meta_set "$AGENTS_DIR/$id/meta" worktree "$worktree"
@@ -1271,8 +1532,16 @@ cmd_report() {
   printf 'recorded %s for %s\n' "$state" "$id"
 }
 
+# One cursor per caller. A shared cursor would let one controller consume an
+# event and hide it from another.
+watch_cursor_file() {
+  local key
+  key=${EGO_CONTROLLER_ID:-${TMUX_PANE:-default}}
+  printf '%s/watch/%s.cursor\n' "$EGO_HOME" "$(clean_id "$key")"
+}
+
 cmd_watch() {
-  local timeout=300 all=0 start lines now_lines batch matched
+  local timeout=300 all=0 start lines now_lines total batch matched cursor_file
   while [ $# -gt 0 ]; do
     case "$1" in
       --all) all=1; shift ;;
@@ -1282,13 +1551,26 @@ cmd_watch() {
   done
   case "$timeout" in ''|*[!0-9]*) die "watch timeout must be an integer" ;; esac
   ensure_home
-  lines=$(wc -l < "$EVENTS_FILE" | tr -d ' ')
+  cursor_file=$(watch_cursor_file)
+  mkdir -p "$(dirname "$cursor_file")"
+  total=$(wc -l < "$EVENTS_FILE" | tr -d ' ')
+  # The first watch on a cursor starts from now so an old log is not replayed.
+  # Later calls resume, which surfaces events that landed while the controller
+  # was busy instead of dropping them.
+  if [ -f "$cursor_file" ]; then
+    IFS= read -r lines < "$cursor_file" || lines=0
+    case "$lines" in ''|*[!0-9]*) lines=0 ;; esac
+    [ "$lines" -le "$total" ] || lines=$total
+  else
+    lines=$total
+  fi
   start=$SECONDS
-  while [ $((SECONDS - start)) -lt "$timeout" ]; do
+  while :; do
     now_lines=$(wc -l < "$EVENTS_FILE" | tr -d ' ')
     if [ "$now_lines" -gt "$lines" ]; then
       batch=$(tail -n "+$((lines + 1))" "$EVENTS_FILE")
       lines=$now_lines
+      printf '%s\n' "$lines" > "$cursor_file"
       if [ "$all" -eq 1 ]; then
         printf '%s\n' "$batch"
         return 0
@@ -1299,21 +1581,40 @@ cmd_watch() {
         return 0
       fi
     fi
+    [ $((SECONDS - start)) -lt "$timeout" ] || break
     sleep 1
   done
   printf 'No actionable events within %s seconds.\n' "$timeout"
 }
 
+# A controller sitting in a project directory supervises that session by default.
+# One in a generic directory, such as a home directory or a workspace root
+# itself, has no single project and defaults to the whole server.
+derive_controller_scope() {
+  local dir=$1 base
+  for base in "$(workspace_option @workspace_primary)" "$(workspace_option @workspace_secondary)"; do
+    [ -n "$base" ] || continue
+    [ "${dir%/}" != "${base%/}" ] || { printf 'server\n'; return 0; }
+  done
+  if [ "$(workspace_kind "$dir")" = external ]; then
+    printf 'server\n'
+  else
+    printf 'session\n'
+  fi
+}
+
 cmd_start() {
-  local session= window=ego agent=kiro row pane launch prompt controller_dir guide
+  local session= window=ego agent=claude scope= row pane launch prompt controller_dir guide
   while [ $# -gt 0 ]; do
     case "$1" in
       --session) [ $# -ge 2 ] || die "--session requires a value"; session=$2; shift 2 ;;
       --window) [ $# -ge 2 ] || die "--window requires a value"; window=$2; shift 2 ;;
       --agent) [ $# -ge 2 ] || die "--agent requires a value"; agent=$2; shift 2 ;;
+      --scope) [ $# -ge 2 ] || die "--scope requires a value"; scope=$2; shift 2 ;;
       *) die "unknown start option '$1'" ;;
     esac
   done
+  case "$scope" in ''|session|server) ;; *) die "--scope must be session or server" ;; esac
   launchable_agent "$agent" || die "--agent must be codex, claude, or kiro"
   command -v "$(agent_executable "$agent")" >/dev/null 2>&1 || die "$(agent_executable "$agent") is not installed"
   require_tmux
@@ -1330,6 +1631,7 @@ cmd_start() {
   # fallback for a session whose root cannot be resolved.
   controller_dir=$(resolve_session_root "$session" 2>/dev/null || true)
   [ -n "$controller_dir" ] && [ -d "$controller_dir" ] || controller_dir="$EGO_HOME/controller"
+  [ -n "$scope" ] || scope=$(derive_controller_scope "$controller_dir")
   if inventory | awk -F '\t' -v s="$session" -v w="$window" '$1 == s && $2 == w { found=1 } END { exit !found }'; then
     die "tmux window $session:$window already exists"
   fi
@@ -1345,11 +1647,12 @@ cmd_start() {
   } > "$launch"
   chmod 700 "$launch"
   {
-    printf 'session=%s\nwindow=%s\npane_id=%s\nstarted_at=%s\n' "$session" "$window" "$pane" "$(now)"
+    printf 'session=%s\nwindow=%s\npane_id=%s\nscope=%s\nstarted_at=%s\n' \
+      "$session" "$window" "$pane" "$scope" "$(now)"
   } > "$EGO_HOME/controller.meta"
   tmux_cmd send-keys -t "$pane" "$(shell_quote "$launch")" Enter
-  append_event controller ego "$session:$window"
-  printf 'started Ego at %s:%s\n' "$session" "$window"
+  append_event controller ego "$session:$window scope=$scope"
+  printf 'started Ego at %s:%s with %s scope\n' "$session" "$window" "$scope"
 }
 
 command_name=${1:-help}
@@ -1370,6 +1673,8 @@ case "$command_name" in
   workspaces) cmd_workspaces "$@" ;;
   context|status) cmd_context "$@" ;;
   session-start) cmd_session_start "$@" ;;
+  prune) cmd_prune "$@" ;;
+  forget) cmd_forget "$@" ;;
   register) require_tmux; cmd_register "$@" ;;
   spawn) cmd_spawn "$@" ;;
   onboard) require_tmux; cmd_onboard "$@" ;;

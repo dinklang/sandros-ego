@@ -21,6 +21,7 @@ The prototype can:
 - Rebuild its view after a restart from tmux and files on disk.
 - Record a recovery checkpoint for each workspace session.
 - Launch Codex, Claude, or Kiro agents.
+- Retire the records of panes and workspaces that no longer exist.
 - Queue durable instructions and record worker acknowledgements.
 - Create an optional Git branch and worktree for a spawned agent.
 - Save a compact pre-restart workspace checkpoint.
@@ -299,7 +300,8 @@ Pass `--root` to create a missing session somewhere else or to override an
 existing session's path. The controller never substitutes its runtime directory
 or the Ego source repository.
 Use `--agent claude` for Claude Code and `--agent kiro` for Kiro CLI.
-Kiro is the default; use `--agent codex` for Codex.
+Kiro is the default worker; use `--agent codex` for Codex. The controller
+started by `ego start` defaults to Claude Code instead.
 Other agent programs are outside the supported set for now, although `--command` remains available for experiments.
 Ego starts Codex in `workspace-write` mode and adds `EGO_HOME` as a writable root so the controller and workers can update durable state without full filesystem access. Claude and Kiro use their own permission configuration; Kiro reads its default agent profile and model from `~/.kiro`.
 
@@ -342,6 +344,11 @@ Instructions and reports use separate paths.
 
 Reporting stays active during attended work. Handoff changes who must react and continue supervision. It does not turn reporting on.
 
+`ego watch` keeps a cursor per caller under `state/watch/`, so a report that
+lands while the controller is busy is surfaced by the next watch call instead of
+being missed. The first watch of a session starts from the present and does not
+replay an old log.
+
 ## Finish a workspace
 
 Skipping `stow` avoids a new checkpoint, but it does not remove an older checkpoint. After the tmux session is finished, remove it from active controller context without deleting its records:
@@ -350,7 +357,43 @@ Skipping `stow` avoids a new checkpoint, but it does not remove an older checkpo
 ego archive-workspace optimizer
 ```
 
-This archives the checkpoint, marks its agent records inactive, and returns their ownership to the human. It does not kill tmux, delete source files, or remove a worktree. `ego recover optimizer` can still read the retained records.
+This archives the checkpoint, marks its agent records inactive, and returns their ownership to the human. It does not kill tmux, delete source files, or remove a worktree. `ego recover optimizer` can still read the retained records. A later `ego scan` does not undo the archive, even when the tmux session lives on.
+
+## Retire stale records
+
+A tmux pane id is never reused, so a pane that disappears is gone for good.
+`ego scan` retires the record of any agent whose pane has vanished, which keeps
+dead workers out of every later context read. A workspace record is only written
+from live tmux sessions, so `scan` also marks a record `live=no` when its session
+is gone.
+
+Retire the records a scan cannot judge on its own with:
+
+```sh
+ego prune
+```
+
+This archives a workspace whose tmux session and directory are both gone. A
+killed session whose directory survives stays recorded, because that workspace
+is still resumable. Nothing is deleted and no tmux window or worktree is touched.
+
+Retire one agent by hand with:
+
+```sh
+ego forget project-a--profile
+```
+
+The record leaves startup context but remains available to `ego recover`. Add
+`--purge` to remove the record directory, including its brief, handoff, status
+log, and inbox. `--purge` refuses while the pane is still live. Registering or
+spawning the same id again puts it back into active context.
+
+Use `ego list` to see the difference: the `STATE` column reads `live` or
+`missing` from tmux, the `PROCESS` column says whether the last scan found an
+agent process in that pane, and `ego list active` hides retired records
+entirely. A pane can be `live` with `process=no`, meaning the window is still
+open but its agent has exited. Ego keeps that record, because starting an agent
+in the same pane again reuses it.
 
 ## Start Ego
 
@@ -366,10 +409,31 @@ Or put it in a selected session and window:
 ego start --session Main --window ego --agent codex
 ```
 
+Claude Code runs the controller by default. Use `--agent kiro` or
+`--agent codex` for another one. Workers default to Kiro.
+
 The controller window inherits its session's workspace root, the same root every
 other window in that session uses. Start it in a workspace session to supervise
 that workspace from inside it, or in a session with a generic root to supervise
 the whole server from a neutral place.
+
+That choice also sets how much the controller sees. A controller in a project
+directory records `scope=session` and reads context for that session alone. A
+controller in a generic directory, such as a home directory or a workspace root
+itself, records `scope=server` and reads the whole tmux server. Override it:
+
+```sh
+ego start --session ProfilerShi --scope server
+```
+
+Either way the record is only a default. The controller can widen or narrow any
+single read:
+
+```sh
+ego context              # the recorded scope
+ego context --all        # every session on this server
+ego context --session project-b
+```
 
 Ego can see registered agents in every session on the same tmux server.
 You do not need one Ego process per workspace.
@@ -386,6 +450,26 @@ another pane only after closing the original, because `state/controller.meta`
 still records the old pane.
 
 Ego may also start later. Use `ego scan` and `ego onboard`, or `ego onboard-workspace`, to add agents that already exist.
+
+## More than one controller
+
+Nothing stops several controllers from running at once, and starting a new one
+does not stop or demote an old one. `state/controller.meta` records only the most
+recently started pane, and it changes exactly one thing: which pane `ego scan`
+leaves out of its agent list. So the previous controller keeps working as the
+supervisor of its own workspace, with no takeback needed, and every controller
+reads and writes the same records.
+
+Two consequences follow from that.
+
+A controller started earlier becomes an ordinary detected agent pane once
+`controller.meta` moves on, and a later `scan` registers it as a worker. Use
+`ego forget <id>` when that is not what you want, or keep each controller's
+scope to its own session so they stay out of each other's context.
+
+Every `ego report` appends to one shared `state/events.log`, so reports have no
+addressee. Two controllers both running `ego watch` both wake on the same event
+and may both react to it. Run one watch loop at a time.
 
 ## Recovery
 
@@ -453,15 +537,15 @@ workspace root                 files the agent edits
   state/agents/<id>/status.log  worker and supervisor events
   state/agents/<id>/inbox/      pending durable instructions
   state/workspaces/<session>/meta
-                                session root and workspace kind
+                                session root, workspace kind, live flag
   state/workspaces/<session>/checkpoint.md
                                 recovery summary and next action
   state/events.log              wake stream for Ego
-  state/controller.meta         Ego's own tmux location
+  state/controller.meta         Ego's own tmux location and context scope
   state/worktrees/<id>/         optional isolated Git worktree
 ```
 
-The `meta` file records the session, window, stable tmux pane ID, session root, current directory, foreground command, owner, and timestamps.
+The `meta` file records the session, window, stable tmux pane ID, session root, current directory, foreground command, owner, whether the record is still active, and timestamps.
 
 ## Safety limits
 
@@ -470,3 +554,5 @@ The notice can still collide with unfinished input. Inspect the pane first with 
 
 The prototype never closes a window or deletes a working directory.
 That is intentional while the handoff workflow is still being tested.
+`ego forget --purge` is the one command that deletes anything, and it only
+removes Ego's own record of an agent whose pane is already gone.

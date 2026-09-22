@@ -14,8 +14,15 @@ grep -q 'EGO_CLI_PATH.*session-start' "$ROOT/bin/ego"
 # directory only as a fallback.
 grep -q 'controller_dir=$(resolve_session_root "$session"' "$ROOT/bin/ego"
 grep -q 'controller_dir="$EGO_HOME/controller"' "$ROOT/bin/ego"
+# Claude runs the controller by default; Kiro runs the workers.
+grep -q 'local session= window=ego agent=claude scope=' "$ROOT/bin/ego"
+grep -q 'local name=$1 session= root= id= brief= command_text= agent=kiro' "$ROOT/bin/ego"
+# Retirement must survive a rescan, or archive-workspace and forget undo themselves.
+grep -q "active=\$(meta_get \"\$meta\" active)" "$ROOT/bin/ego"
 # display-message needs "=name:"; the bare "=name" form silently returns nothing.
 grep -q 'display-message -p -t "=$session:" .#{session_path}.' "$ROOT/bin/ego"
+# A stale pane id also makes display-message exit 0 with empty fields.
+grep -q "case \"\$out\" in ''|\$'\\\\t'\*) return 1 ;; esac" "$ROOT/bin/ego"
 # A session path equal to a workspace root must descend into the session directory.
 grep -q 'refine_workspace_root "$session" "$root"' "$ROOT/bin/ego"
 grep -Fq 'follow $guide' "$ROOT/bin/ego"
@@ -214,6 +221,19 @@ if printf '%s\n' "$watch_output" | grep -q 'quiet progress'; then
 fi
 "$ROOT/bin/ego" watch 0 | grep -q '^No actionable events within 0 seconds\.$'
 
+# An event that lands between two watch calls is surfaced by the next one.
+"$ROOT/bin/ego" report alpha--agent-one blocked "arrived while busy" >/dev/null
+"$ROOT/bin/ego" watch 0 | grep -q 'arrived while busy'
+"$ROOT/bin/ego" watch 0 | grep -q '^No actionable events within 0 seconds\.$'
+test -n "$(find "$EGO_HOME/watch" -name '*.cursor' -print -quit)"
+
+# A live pane whose agent has exited is recorded as having no process.
+"$ROOT/bin/ego" scan >/dev/null
+grep -q '^process=yes$' "$EGO_HOME/agents/alpha--optimizer/meta"
+grep -q '^process=no$' "$EGO_HOME/agents/alpha--three/meta"
+"$ROOT/bin/ego" list | head -1 | grep -q $'STATE\tPROCESS\tAGENT'
+"$ROOT/bin/ego" list | grep 'alpha--three' | grep -q $'live\tno'
+
 tmux -L "$SOCKET" kill-session -t beta
 "$ROOT/bin/ego" archive-workspace beta >/dev/null
 grep -q '^state=archived$' "$EGO_HOME/workspaces/beta/meta"
@@ -221,5 +241,82 @@ if "$ROOT/bin/ego" context | grep -q '^beta'; then
   printf 'archived workspace remained in active context\n' >&2
   exit 1
 fi
+
+# A pane id is never reused, so a scan retires the record of a pane that is gone.
+tmux -L "$SOCKET" new-window -d -t alpha: -n agent-transient -c "$TMP"
+"$ROOT/bin/ego" register alpha:agent-transient --agent kiro >/dev/null
+grep -q '^active=yes$' "$EGO_HOME/agents/alpha--agent-transient/meta"
+tmux -L "$SOCKET" kill-window -t alpha:agent-transient
+"$ROOT/bin/ego" scan | grep -q 'retired [1-9]'
+grep -q '^active=no$' "$EGO_HOME/agents/alpha--agent-transient/meta"
+grep -q '^last_seen=' "$EGO_HOME/agents/alpha--agent-transient/meta"
+"$ROOT/bin/ego" list | grep 'alpha--agent-transient' | grep -q 'missing'
+if "$ROOT/bin/ego" list active | grep -q 'alpha--agent-transient'; then
+  printf 'retired agent stayed in the active list\n' >&2
+  exit 1
+fi
+
+# forget retires one record, and only --purge removes it.
+"$ROOT/bin/ego" forget alpha--agent-transient | grep -q 'already retired'
+"$ROOT/bin/ego" forget alpha--agent-transient --purge >/dev/null
+test ! -d "$EGO_HOME/agents/alpha--agent-transient"
+if "$ROOT/bin/ego" forget alpha--optimizer --purge >/dev/null 2>&1; then
+  printf 'forget purged an agent with a live pane\n' >&2
+  exit 1
+fi
+"$ROOT/bin/ego" forget alpha--optimizer | grep -q '^retired alpha--optimizer'
+grep -q '^active=no$' "$EGO_HOME/agents/alpha--optimizer/meta"
+"$ROOT/bin/ego" scan >/dev/null
+grep -q '^active=no$' "$EGO_HOME/agents/alpha--optimizer/meta"
+"$ROOT/bin/ego" register alpha:optimizer >/dev/null
+grep -q '^active=yes$' "$EGO_HOME/agents/alpha--optimizer/meta"
+# register without --agent must not overwrite the detected agent type
+grep -q '^agent=codex$' "$EGO_HOME/agents/alpha--optimizer/meta"
+
+# A killed session keeps its workspace record while the directory survives.
+mkdir -p "$TMP/delta"
+tmux -L "$SOCKET" new-session -d -s delta -c "$TMP/delta" -n base
+"$ROOT/bin/ego" scan >/dev/null
+grep -q '^live=yes$' "$EGO_HOME/workspaces/delta/meta"
+tmux -L "$SOCKET" kill-session -t delta
+"$ROOT/bin/ego" scan >/dev/null
+grep -q '^live=no$' "$EGO_HOME/workspaces/delta/meta"
+grep -q '^state=active$' "$EGO_HOME/workspaces/delta/meta"
+if "$ROOT/bin/ego" context | grep -q '^delta'; then
+  printf 'a workspace with no live session stayed in active context\n' >&2
+  exit 1
+fi
+"$ROOT/bin/ego" prune | grep -q 'archived 0 workspace records'
+rmdir "$TMP/delta"
+"$ROOT/bin/ego" prune | grep -q 'archived 1 workspace records'
+grep -q '^state=archived$' "$EGO_HOME/workspaces/delta/meta"
+# An explicit archive is not undone by a later scan of a session that lives on.
+"$ROOT/bin/ego" archive-workspace gamma >/dev/null
+"$ROOT/bin/ego" scan >/dev/null
+grep -q '^state=archived$' "$EGO_HOME/workspaces/gamma/meta"
+
+# The controller records its scope, and context honors it.
+{
+  printf '%s\n' '#!/usr/bin/env bash'
+  printf '%s\n' 'sleep 5'
+} > "$TMP/fake-bin/claude"
+chmod 700 "$TMP/fake-bin/claude"
+mkdir -p "$TMP/epsilon"
+tmux -L "$SOCKET" new-session -d -s epsilon -c "$TMP/epsilon" -n base
+PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" start --session epsilon --window ego \
+  | grep -q 'with session scope'
+grep -q '^scope=session$' "$EGO_HOME/controller.meta"
+grep -q '^exec claude ' "$EGO_HOME/controller-launch.sh"
+"$ROOT/bin/ego" context | grep -q '^Scope: session epsilon\.'
+if "$ROOT/bin/ego" context | grep -q '^alpha'; then
+  printf 'session-scoped context leaked another workspace\n' >&2
+  exit 1
+fi
+"$ROOT/bin/ego" context --all | grep -q '^alpha'
+"$ROOT/bin/ego" context --session alpha | grep -q '^alpha'
+# A controller sitting in a workspace root itself has no single project.
+PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" start --session alpha --window ego-server >/dev/null
+grep -q '^scope=server$' "$EGO_HOME/controller.meta"
+"$ROOT/bin/ego" context | grep -q '^Scope: every session'
 
 printf 'ok\n'

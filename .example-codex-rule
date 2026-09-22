@@ -2,6 +2,8 @@
 # Replace /ABSOLUTE/HOME with the absolute home directory on this machine.
 # Keep the absolute executable path. A rule for bare `ego` could match another
 # executable earlier in PATH, and a broad `tmux` rule would permit tmux run-shell.
+# `forget` is left out on purpose: `forget --purge` removes a record, so the
+# controller should ask before running it.
 prefix_rule(
     pattern=[
         "/ABSOLUTE/HOME/.ego/bin/ego",
@@ -11,6 +13,7 @@ prefix_rule(
             "list",
             "context",
             "status",
+            "prune",
             "register",
             "spawn",
             "onboard",
