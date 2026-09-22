@@ -272,6 +272,10 @@ shell_quote() {
 
 meta_get() {
   local file=$1 key=$2
+  # An empty or missing path would make awk read stdin and block forever, which
+  # is reachable because 'die' inside a command substitution cannot stop the
+  # caller: bash does not honor set -e in that subshell.
+  [ -n "$file" ] && [ -f "$file" ] || return 0
   awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$file"
 }
 
@@ -813,6 +817,10 @@ resolve_session_root() {
 
 pane_snapshot() {
   local pane=$1 fmt out
+  # An empty tmux target resolves to the caller's own pane, so an unset pane id
+  # must never reach tmux. Otherwise a lookup failure turns into the controller
+  # inspecting, or typing into, itself.
+  [ -n "$pane" ] || return 1
   fmt=$'#{session_name}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}'
   out=$(tmux_cmd display-message -p -t "$pane" "$fmt" 2>/dev/null) || return 1
   # A stale pane id makes display-message print empty fields and still exit 0,
@@ -1640,6 +1648,7 @@ cmd_peek() {
   meta=$(agent_meta "$1")
   require_in_scope "$(meta_get "$meta" session)"
   pane=$(meta_get "$meta" pane_id)
+  [ -n "$pane" ] || die "agent '$1' has no recorded pane"
   case "$lines" in ''|*[!0-9]*) die "lines must be a positive integer" ;; esac
   tmux_cmd capture-pane -p -t "$pane" -S "-$lines"
 }
@@ -1647,8 +1656,11 @@ cmd_peek() {
 queue_message() {
   local id=$1 text=$2 meta pane dir inbox message_id tmp notice buffer ego_cli suffix=0
   meta=$(agent_meta "$id")
+  # Callers invoke this through a command substitution, where bash ignores
+  # set -e, so a failed lookup has to be checked rather than trusted to abort.
+  [ -n "$meta" ] || return 1
   pane=$(meta_get "$meta" pane_id)
-  pane_snapshot "$pane" >/dev/null || die "agent '$id' has no live pane"
+  pane_snapshot "$pane" >/dev/null || return 1
   dir=${meta%/meta}
   inbox="$dir/inbox"
   mkdir -p "$inbox/handled"
@@ -1678,12 +1690,18 @@ queue_message() {
 
 cmd_send() {
   [ $# -ge 2 ] || die "send requires an agent id and message"
-  local id=$1 text message_id
+  local id=$1 text meta message_id
   shift
   text=$*
-  require_in_scope "$(meta_get "$(agent_meta "$id")" session)"
-  message_id=$(queue_message "$id" "$text")
-  append_event sent "$id" "message=$message_id $text" "$(agent_session "$id")"
+  # Resolve into a variable rather than nesting agent_meta inside another
+  # substitution: its 'die' would only exit the inner subshell, and execution
+  # would continue with an empty record path.
+  meta=$(agent_meta "$id")
+  require_in_scope "$(meta_get "$meta" session)"
+  message_id=$(queue_message "$id" "$text") \
+    || die "could not reach '$id'; its pane may be gone, so run 'ego scan'"
+  [ -n "$message_id" ] || die "could not reach '$id'; its pane may be gone, so run 'ego scan'"
+  append_event sent "$id" "message=$message_id $text" "$(meta_get "$meta" session)"
   printf 'queued %s for %s\n' "$message_id" "$id"
 }
 
@@ -1740,7 +1758,9 @@ cmd_onboard() {
   require_in_scope "$(meta_get "$meta" session)"
   ego_cli="EGO_HOME=$(shell_quote "$EGO_HOME") $(shell_quote "$EGO_CLI_PATH")"
   message="Join Ego's reporting protocol while keeping the current human workflow. Report only material phase changes with: $ego_cli report $id <working|idle|blocked|needs-decision|done|failed|note> <message>. Use idle when no task is assigned. Use done when your assigned scope is complete, even if the broader project has a later external gate. Use blocked only when the assigned scope cannot proceed. Check instructions at natural checkpoints with: $ego_cli inbox $id. Acknowledge each handled instruction with: $ego_cli ack $id <message-id>. Reporting stays active whether owner is human or ego."
-  message_id=$(queue_message "$id" "$message")
+  message_id=$(queue_message "$id" "$message") \
+    || die "could not reach '$id'; its pane may be gone, so run 'ego scan'"
+  [ -n "$message_id" ] || die "could not reach '$id'; its pane may be gone, so run 'ego scan'"
   meta_set "$meta" reporting on
   meta_set "$meta" updated_at "$(now)"
   append_event onboarded "$id" "message=$message_id" "$(meta_get "$meta" session)"

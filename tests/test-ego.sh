@@ -114,6 +114,45 @@ if "$ROOT/bin/ego" press alpha--agent-one arbitrary >/dev/null 2>&1; then
   exit 1
 fi
 
+# An unknown agent id must fail loudly. An empty tmux target resolves to the
+# caller's own pane, so a lookup failure that fell through would make Ego type
+# into itself. 'die' cannot prevent that on its own: bash ignores set -e inside
+# the command substitutions these callers use.
+if "$ROOT/bin/ego" send no-such-agent hello >/dev/null 2>&1; then
+  printf 'send accepted an unknown agent id\n' >&2
+  exit 1
+fi
+if "$ROOT/bin/ego" peek no-such-agent >/dev/null 2>&1; then
+  printf 'peek accepted an unknown agent id\n' >&2
+  exit 1
+fi
+if "$ROOT/bin/ego" onboard no-such-agent >/dev/null 2>&1; then
+  printf 'onboard accepted an unknown agent id\n' >&2
+  exit 1
+fi
+if grep -q 'no-such-agent' "$EGO_HOME/events.log"; then
+  printf 'a failed send recorded an event\n' >&2
+  exit 1
+fi
+# A recorded agent whose pane id is empty must not reach tmux either.
+"$ROOT/bin/ego" register alpha:agent-one --id paneless >/dev/null
+sed -i 's/^pane_id=.*/pane_id=/' "$EGO_HOME/agents/paneless/meta"
+if "$ROOT/bin/ego" send paneless hello >/dev/null 2>&1; then
+  printf 'send reached an agent with no recorded pane\n' >&2
+  exit 1
+fi
+if "$ROOT/bin/ego" peek paneless >/dev/null 2>&1; then
+  printf 'peek reached an agent with no recorded pane\n' >&2
+  exit 1
+fi
+if "$ROOT/bin/ego" press paneless enter >/dev/null 2>&1; then
+  printf 'press reached an agent with no recorded pane\n' >&2
+  exit 1
+fi
+rm -rf "$EGO_HOME/agents/paneless"
+# meta_get on a missing file must return empty instead of blocking on stdin.
+test -z "$("$ROOT/bin/ego" peek no-such-agent 2>/dev/null </dev/null || true)"
+
 onboard_output=$("$ROOT/bin/ego" onboard-workspace alpha)
 printf '%s\n' "$onboard_output" | grep -q '^onboarded 1 agents in workspace alpha; 1 already reporting; 0 unavailable$'
 grep -q '^reporting=on$' "$EGO_HOME/agents/alpha--optimizer/meta"
