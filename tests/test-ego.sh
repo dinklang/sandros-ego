@@ -26,6 +26,15 @@ grep -q "case \"\$out\" in ''|\$'\\\\t'\*) return 1 ;; esac" "$ROOT/bin/ego"
 # A session path equal to a workspace root must descend into the session directory.
 grep -q 'refine_workspace_root "$session" "$root"' "$ROOT/bin/ego"
 grep -Fq 'follow $guide' "$ROOT/bin/ego"
+# A controller is a record, so starting one cannot overwrite another's identity.
+grep -q 'launch="$CONTROLLERS_DIR/$id/launch.sh"' "$ROOT/bin/ego"
+grep -q 'export EGO_CONTROLLER_ID=' "$ROOT/bin/ego"
+if grep -q '> "$EGO_HOME/controller.meta"' "$ROOT/bin/ego"; then
+  printf 'ego still writes the shared controller.meta\n' >&2
+  exit 1
+fi
+# The scope override must not read as the way out of a refusal.
+grep -Fq 'A refusal is not a reason to add it' "$ROOT/CONTROLLER.md"
 if grep -q 'new-window.*-c "$REPO_ROOT"' "$ROOT/bin/ego"; then
   printf 'controller still starts in the source repository\n' >&2
   exit 1
@@ -182,7 +191,7 @@ grep -q "^root=$EGO_HOME/worktrees/alpha--isolated$" "$EGO_HOME/agents/alpha--is
 # Kiro is launchable: the fake kiro-cli stands in for the real binary.
 {
   printf '%s\n' '#!/usr/bin/env bash'
-  printf '%s\n' 'sleep 5'
+  printf '%s\n' 'sleep 600'
 } > "$TMP/fake-bin/kiro-cli"
 chmod 700 "$TMP/fake-bin/kiro-cli"
 PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" spawn kiro-worker --session alpha --root "$TMP" --agent kiro --brief "kiro worker" >/dev/null
@@ -198,12 +207,26 @@ tmux -L "$SOCKET" new-window -d -t alpha: -n kiro-manual -c "$TMP"
 "$ROOT/bin/ego" register alpha:kiro-manual --agent kiro >/dev/null
 grep -q '^agent=kiro$' "$EGO_HOME/agents/alpha--kiro-manual/meta"
 PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" start --session alpha --window ego-kiro --agent kiro >/dev/null
-grep -q "^exec kiro-cli chat 'You are Sandro'\\\\''s Ego" "$EGO_HOME/controller-launch.sh"
+grep -q "^exec kiro-cli chat 'You are Sandro'\\\\''s Ego" "$EGO_HOME/controllers/alpha--ego-kiro/launch.sh"
 # The controller launches from the session root, not the neutral state directory.
-grep -q "^cd '$TMP'$" "$EGO_HOME/controller-launch.sh"
+grep -q "^cd '$TMP'$" "$EGO_HOME/controllers/alpha--ego-kiro/launch.sh"
+# The launch script restores this controller's own identity when re-run in place.
+grep -q "^export EGO_CONTROLLER_ID='alpha--ego-kiro'$" "$EGO_HOME/controllers/alpha--ego-kiro/launch.sh"
+grep -q '^scope=server$' "$EGO_HOME/controllers/alpha--ego-kiro/meta"
 tmux -L "$SOCKET" display-message -p -t "=alpha:ego-kiro" '#{pane_current_path}' | grep -qx "$TMP"
+"$ROOT/bin/ego" controllers | grep 'alpha--ego-kiro' | grep -q $'server\tyes\tlive'
 "$ROOT/bin/ego" context | grep -q "Sandro's Ego context"
 "$ROOT/bin/ego" session-start | grep -q "Sandro's Ego context"
+# A controller pane is a controller, never also a worker record: registering one
+# as a worker is undone by the next scan.
+"$ROOT/bin/ego" register alpha:ego-kiro >/dev/null
+grep -q '^active=yes$' "$EGO_HOME/agents/alpha--ego-kiro/meta"
+"$ROOT/bin/ego" scan >/dev/null
+grep -q '^active=no$' "$EGO_HOME/agents/alpha--ego-kiro/meta"
+if "$ROOT/bin/ego" list active | grep -q 'alpha--ego-kiro'; then
+  printf 'a controller pane stayed in the active worker list\n' >&2
+  exit 1
+fi
 
 (
   sleep 1
@@ -214,7 +237,7 @@ tmux -L "$SOCKET" display-message -p -t "=alpha:ego-kiro" '#{pane_current_path}'
 reporter=$!
 watch_output=$("$ROOT/bin/ego" watch 5)
 wait "$reporter"
-printf '%s\n' "$watch_output" | grep -q $'\tdone\talpha--agent-one\tactionable completion$'
+printf '%s\n' "$watch_output" | grep -q $'\tdone\talpha--agent-one\tactionable completion\talpha$'
 if printf '%s\n' "$watch_output" | grep -q 'quiet progress'; then
   printf 'watch surfaced routine progress\n' >&2
   exit 1
@@ -295,28 +318,120 @@ grep -q '^state=archived$' "$EGO_HOME/workspaces/delta/meta"
 "$ROOT/bin/ego" scan >/dev/null
 grep -q '^state=archived$' "$EGO_HOME/workspaces/gamma/meta"
 
-# The controller records its scope, and context honors it.
+# Each controller has its own record, so starting one changes nothing about
+# another, and scope resolves from the caller rather than a shared file.
 {
   printf '%s\n' '#!/usr/bin/env bash'
-  printf '%s\n' 'sleep 5'
+  printf '%s\n' 'sleep 600'
 } > "$TMP/fake-bin/claude"
 chmod 700 "$TMP/fake-bin/claude"
-mkdir -p "$TMP/epsilon"
+mkdir -p "$TMP/epsilon" "$TMP/zeta"
 tmux -L "$SOCKET" new-session -d -s epsilon -c "$TMP/epsilon" -n base
+tmux -L "$SOCKET" new-session -d -s zeta -c "$TMP/zeta" -n base
 PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" start --session epsilon --window ego \
-  | grep -q 'with session scope'
-grep -q '^scope=session$' "$EGO_HOME/controller.meta"
-grep -q '^exec claude ' "$EGO_HOME/controller-launch.sh"
-"$ROOT/bin/ego" context | grep -q '^Scope: session epsilon\.'
-if "$ROOT/bin/ego" context | grep -q '^alpha'; then
+  | grep -q 'started Ego epsilon--ego .* with session scope'
+grep -q '^scope=session$' "$EGO_HOME/controllers/epsilon--ego/meta"
+grep -q '^exec claude ' "$EGO_HOME/controllers/epsilon--ego/launch.sh"
+PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" start --session zeta --window ego >/dev/null
+grep -q '^scope=session$' "$EGO_HOME/controllers/zeta--ego/meta"
+# Starting the second controller left the first one alone.
+grep -q '^session=epsilon$' "$EGO_HOME/controllers/epsilon--ego/meta"
+grep -q '^scope=session$' "$EGO_HOME/controllers/epsilon--ego/meta"
+
+context_epsilon=$(EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" context)
+printf '%s\n' "$context_epsilon" | grep -q '^Scope: session epsilon\.'
+if printf '%s\n' "$context_epsilon" | grep -q '^zeta'; then
   printf 'session-scoped context leaked another workspace\n' >&2
   exit 1
 fi
-"$ROOT/bin/ego" context --all | grep -q '^alpha'
-"$ROOT/bin/ego" context --session alpha | grep -q '^alpha'
+context_zeta=$(EGO_CONTROLLER_ID=zeta--ego "$ROOT/bin/ego" context)
+printf '%s\n' "$context_zeta" | grep -q '^Scope: session zeta\.'
+if printf '%s\n' "$context_zeta" | grep -q '^epsilon'; then
+  printf 'session-scoped context leaked another workspace\n' >&2
+  exit 1
+fi
+# Neither controller appears in the other's agent list.
+if printf '%s\n' "$context_epsilon" | grep -q 'zeta--ego'; then
+  printf 'a controller appeared in another controller context\n' >&2
+  exit 1
+fi
+EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" context --all | grep -q '^alpha'
+EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" context --session alpha | grep -q '^alpha'
+# A human in a plain shell has server scope.
+"$ROOT/bin/ego" context | grep -q '^Scope: every session'
 # A controller sitting in a workspace root itself has no single project.
 PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" start --session alpha --window ego-server >/dev/null
-grep -q '^scope=server$' "$EGO_HOME/controller.meta"
-"$ROOT/bin/ego" context | grep -q '^Scope: every session'
+grep -q '^scope=server$' "$EGO_HOME/controllers/alpha--ego-server/meta"
+EGO_CONTROLLER_ID=alpha--ego-server "$ROOT/bin/ego" context | grep -q '^Scope: every session'
+
+# Scope is a boundary, not only a display filter.
+if EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" peek alpha--agent-one >/dev/null 2>&1; then
+  printf 'a session-scoped controller peeked into another workspace\n' >&2
+  exit 1
+fi
+EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" peek alpha--agent-one --any-session >/dev/null
+if EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" spawn intruder --session alpha --root "$TMP" --command 'sleep 5' >/dev/null 2>&1; then
+  printf 'a session-scoped controller spawned into another workspace\n' >&2
+  exit 1
+fi
+test ! -d "$EGO_HOME/agents/alpha--intruder"
+if EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" checkpoint alpha --summary out-of-scope >/dev/null 2>&1; then
+  printf 'a session-scoped controller checkpointed another workspace\n' >&2
+  exit 1
+fi
+# A refused register leaves no record behind.
+if EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" register alpha:base >/dev/null 2>&1; then
+  printf 'a session-scoped controller registered a window elsewhere\n' >&2
+  exit 1
+fi
+test ! -d "$EGO_HOME/agents/alpha--base"
+# A worker is scoped to its own session for the same reason.
+if EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" send beta--agent-two hello >/dev/null 2>&1; then
+  printf 'a worker reached a sibling in another workspace\n' >&2
+  exit 1
+fi
+EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" report alpha--three note "self report is exempt" >/dev/null
+
+# Promotion is a field write, not a restart.
+EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" promote | grep -q 'now has server scope'
+grep -q '^scope=server$' "$EGO_HOME/controllers/epsilon--ego/meta"
+EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" context | grep -q '^Scope: every session'
+EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" peek alpha--agent-one >/dev/null
+"$ROOT/bin/ego" promote epsilon--ego --scope session >/dev/null
+grep -q '^scope=session$' "$EGO_HOME/controllers/epsilon--ego/meta"
+
+# Events carry a session, so a session-scoped controller wakes only for its own.
+EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" watch 0 >/dev/null
+"$ROOT/bin/ego" report alpha--agent-one blocked "another workspace is stuck" >/dev/null
+EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" watch 0 | grep -q '^No actionable events within 0 seconds\.$'
+"$ROOT/bin/ego" handoff-workspace epsilon --summary "epsilon needs supervision" >/dev/null
+EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" watch 0 | grep -q 'epsilon needs supervision'
+grep -q $'\tworkspace-handoff\tepsilon\tepsilon needs supervision\tepsilon$' "$EGO_HOME/events.log"
+grep -q $'\tscan\tfleet\t.*\t$' "$EGO_HOME/events.log"
+
+# Retiring a controller record drops its event cursor.
+test -f "$EGO_HOME/watch/epsilon--ego.cursor"
+tmux -L "$SOCKET" kill-session -t epsilon
+"$ROOT/bin/ego" scan >/dev/null
+grep -q '^active=no$' "$EGO_HOME/controllers/epsilon--ego/meta"
+test ! -f "$EGO_HOME/watch/epsilon--ego.cursor"
+"$ROOT/bin/ego" controllers | grep 'epsilon--ego' | grep -q $'no\tmissing'
+
+# A controller.meta from before controllers had records is migrated once.
+rm -rf "$TMP/legacy"
+mkdir -p "$TMP/legacy/state"
+tmux -L "$SOCKET" new-window -d -t alpha: -n legacy-ego -c "$TMP"
+legacy_pane=$(tmux -L "$SOCKET" list-panes -t alpha:legacy-ego -F '#{pane_id}')
+{
+  printf 'session=alpha\nwindow=legacy-ego\npane_id=%s\nscope=session\nstarted_at=x\n' "$legacy_pane"
+} > "$TMP/legacy/state/controller.meta"
+EGO_HOME="$TMP/legacy/state" "$ROOT/bin/ego" init >/dev/null
+grep -q '^scope=session$' "$TMP/legacy/state/controllers/alpha--legacy-ego/meta"
+grep -q "^pane_id=$legacy_pane\$" "$TMP/legacy/state/controllers/alpha--legacy-ego/meta"
+test -f "$TMP/legacy/state/controller.meta"
+# Migration runs once, so a later scope change is not reverted.
+EGO_HOME="$TMP/legacy/state" "$ROOT/bin/ego" promote alpha--legacy-ego >/dev/null
+EGO_HOME="$TMP/legacy/state" "$ROOT/bin/ego" init >/dev/null
+grep -q '^scope=server$' "$TMP/legacy/state/controllers/alpha--legacy-ego/meta"
 
 printf 'ok\n'

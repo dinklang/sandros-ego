@@ -18,6 +18,9 @@ The prototype can:
 - Inspect and send text to a registered pane.
 - Press a restricted set of keys for an explicitly authorized terminal prompt.
 - Start a dedicated Ego agent in a tmux window.
+- Run several controllers at once, each with its own record and scope.
+- Keep a session-scoped controller inside its own workspace.
+- Change a running controller's scope without restarting it.
 - Rebuild its view after a restart from tmux and files on disk.
 - Record a recovery checkpoint for each workspace session.
 - Launch Codex, Claude, or Kiro agents.
@@ -417,14 +420,17 @@ other window in that session uses. Start it in a workspace session to supervise
 that workspace from inside it, or in a session with a generic root to supervise
 the whole server from a neutral place.
 
-That choice also sets how much the controller sees. A controller in a project
-directory records `scope=session` and reads context for that session alone. A
+That choice also sets how much the controller sees and may touch. A controller in
+a project directory records `scope=session` and works in that session alone. A
 controller in a generic directory, such as a home directory or a workspace root
-itself, records `scope=server` and reads the whole tmux server. Override it:
+itself, records `scope=server` and supervises the whole tmux server. Override it:
 
 ```sh
 ego start --session ProfilerShi --scope server
 ```
+
+Starting a controller has no effect on any controller already running. Each one
+gets its own record, so an earlier controller keeps its pane, scope, and workers.
 
 Either way the record is only a default. The controller can widen or narrow any
 single read:
@@ -435,41 +441,66 @@ ego context --all        # every session on this server
 ego context --session project-b
 ```
 
+Scope is also a limit, not only a display filter. A session-scoped controller is
+refused when it tries to peek, send, spawn, checkpoint, or hand off in another
+workspace. `--any-session` is the deliberate override, for a request from Sandro
+that names another workspace:
+
+```sh
+ego peek project-b--optimizer --any-session
+```
+
+Scope is read at call time, so a running controller can change it without a
+restart:
+
+```sh
+ego promote                        # this controller takes the whole server
+ego promote project-a--ego --scope session
+```
+
+`ego start --scope server` is the normal way to get a server controller.
+Promotion is for linking one more workspace to a controller already at work.
+
 Ego can see registered agents in every session on the same tmux server.
 You do not need one Ego process per workspace.
 
-To restart the controller in place after a context reset, run its generated
+To restart the controller in place after a context reset, run its own generated
 launch script in the same pane instead of closing the window:
 
 ```sh
-~/.ego/state/controller-launch.sh
+~/.ego/state/controllers/<session>--<window>/launch.sh
 ```
 
-`ego start` refuses a window that already exists. Run the launch script from
-another pane only after closing the original, because `state/controller.meta`
-still records the old pane.
+The script exports that controller's id, so a restart in place always restores
+the same identity and scope. `ego start` refuses a window that already exists.
+List the controllers and their launch paths with:
+
+```sh
+ego controllers
+```
 
 Ego may also start later. Use `ego scan` and `ego onboard`, or `ego onboard-workspace`, to add agents that already exist.
 
 ## More than one controller
 
 Nothing stops several controllers from running at once, and starting a new one
-does not stop or demote an old one. `state/controller.meta` records only the most
-recently started pane, and it changes exactly one thing: which pane `ego scan`
-leaves out of its agent list. So the previous controller keeps working as the
-supervisor of its own workspace, with no takeback needed, and every controller
-reads and writes the same records.
+does not stop or demote an old one. Each has its own record under
+`state/controllers/<id>/`, so nothing about an earlier controller changes when a
+later one starts. Every controller still reads and writes the same agent and
+workspace records.
 
-Two consequences follow from that.
+A pane is a controller or a worker, never both. `ego scan` excludes every live
+controller pane from its agent list, and retires any agent record that claims a
+controller's pane. A controller whose pane is gone is retired by the next scan.
 
-A controller started earlier becomes an ordinary detected agent pane once
-`controller.meta` moves on, and a later `scan` registers it as a worker. Use
-`ego forget <id>` when that is not what you want, or keep each controller's
-scope to its own session so they stay out of each other's context.
+Scope keeps controllers out of each other's way. A session-scoped controller
+reads only its own workspace, wakes only for events in that workspace, and is
+refused when it tries to act on another one. Give a controller `scope=server`
+when it should supervise several.
 
-Every `ego report` appends to one shared `state/events.log`, so reports have no
-addressee. Two controllers both running `ego watch` both wake on the same event
-and may both react to it. Run one watch loop at a time.
+Every `ego report` appends to one shared `state/events.log`, and `ego watch`
+filters it by the caller's scope. Two server-scoped controllers both watching
+will both wake on the same event, so run one server-wide watch loop at a time.
 
 ## Recovery
 
@@ -540,8 +571,11 @@ workspace root                 files the agent edits
                                 session root, workspace kind, live flag
   state/workspaces/<session>/checkpoint.md
                                 recovery summary and next action
-  state/events.log              wake stream for Ego
-  state/controller.meta         Ego's own tmux location and context scope
+  state/events.log              wake stream for Ego, one session per line
+  state/watch/<caller>.cursor   per-caller position in the event log
+  state/controllers/<id>/meta   one controller's pane, root, and scope
+  state/controllers/<id>/launch.sh
+                                restart that controller in place
   state/worktrees/<id>/         optional isolated Git worktree
 ```
 

@@ -12,17 +12,30 @@ ego session-start
 ```
 
 That reads the scope recorded when this controller started. A controller in a
-workspace session sees only that session; a controller in a generic session sees
-the whole tmux server. The scope line at the top of the output says which. Widen
-a single read with `ego context --all` or narrow it with `ego context --session
-<session>` when a question needs another workspace. Do not treat the startup
-context as a live view: it is a snapshot, and workspaces or agents in it may be
-gone by the time you act. Re-read it rather than trusting a stale table.
+workspace session works in that session alone; a controller in a generic session
+supervises the whole tmux server. The scope line at the top of the output says
+which. Widen a single read with `ego context --all` or narrow it with `ego
+context --session <session>` when a question needs another workspace. Do not
+treat the startup context as a live view: it is a snapshot, and workspaces or
+agents in it may be gone by the time you act. Re-read it rather than trusting a
+stale table.
 
-Other controllers may be running. Starting this one did not stop them, and they
-may still be supervising their own workspaces. Do not steer an agent in another
-controller's session without Sandro's instruction, and run only one `ego watch`
-loop so two controllers do not both react to the same event.
+Scope is enforced, not only displayed. With session scope, `peek`, `send`,
+`press`, `spawn`, `handoff`, `takeback`, `onboard`, `register`, `forget`,
+`checkpoint`, `stow`, and the workspace commands refuse a session that is not
+yours. `--any-session` overrides the refusal. Use it only when Sandro has named
+the other workspace. A refusal is not a reason to add it: without that
+instruction, report the boundary instead of crossing it.
+
+Other controllers may be running. Starting this one did not stop them, they keep
+their own records, and they may still be supervising their own workspaces. Run
+only one server-wide `ego watch` loop so two controllers do not both react to the
+same event. A session-scoped `watch` wakes only for its own workspace.
+
+Ask Sandro before changing scope. `ego promote` takes the whole server and needs
+no restart, but a wider scope means this controller can now act on workspaces
+another controller owns. `ego controllers` lists every controller, its session,
+its scope, and whether its pane is still live.
 
 Use the protected `ego` executable named in the launch prompt. This is a
 temporary workaround for the Codex workspace sandbox. The narrow command rule
@@ -65,6 +78,7 @@ Use these commands:
 ```sh
 ego list
 ego context
+ego controllers
 ego peek <id>
 ego send <id> '<message>'
 ego press <id> <enter|escape|y|n|p>
@@ -120,11 +134,12 @@ finished. It removes the workspace from active startup context while retaining
 recovery records. It does not terminate tmux or delete a worktree.
 
 `ego scan` retires an agent whose pane is gone, so a dead worker leaves context
-on its own. Run `ego prune` when a workspace record outlives both its tmux
-session and its directory. Use `ego forget <id>` for a single record that should
-not be tracked, such as a controller from an earlier session that was picked up
-as a worker. Add `--purge` only when Sandro asks for the record itself to be
-removed. None of these touch a tmux window, a working directory, or a worktree.
+on its own. It also retires a controller record whose pane is gone, and any agent
+record that claims a live controller's pane. Run `ego prune` when a workspace
+record outlives both its tmux session and its directory. Use `ego forget <id>`
+for a single record that should not be tracked. Add `--purge` only when Sandro
+asks for the record itself to be removed. None of these touch a tmux window, a
+working directory, or a worktree.
 
 For every takeback request, inspect the worker's latest durable report and live
 pane before changing ownership. After takeback, always give Sandro a short

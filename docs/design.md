@@ -19,7 +19,6 @@ Each session has its own session path and agent windows.
 Ego reads the entire server and records the exact session, window, window ID, and pane ID for each agent.
 
 One controller can supervise agents across those sessions.
-The controller's own tmux location does not decide which agents it can see.
 The controller window inherits its session's workspace root, so it matches every
 other window in that session. Starting the controller in a session whose root is
 generic keeps a server-wide controller out of any one project. The neutral
@@ -28,21 +27,39 @@ cannot be resolved. Its runtime instructions come from the installed
 `~/.ego/CONTROLLER.md`; the repository `AGENTS.md` applies only while developing
 Ego.
 
-That location also sets a default context scope, recorded in `controller.meta`.
-A controller in a project directory defaults to its own session; one in a generic
-directory, including a workspace root itself, defaults to the whole server. The
-scope bounds what `ego context` prints, not what `ego scan` records: keeping the
+That location also sets a default scope. A controller in a project directory
+defaults to its own session; one in a generic directory, including a workspace
+root itself, defaults to the whole server. Scope bounds what a controller reads,
+wakes for, and may touch. It does not bound what `ego scan` records: keeping the
 fleet record complete costs one tmux call and preserves cross-session handoff on
-request, while the scope keeps other people's workspaces out of a controller's
-opening context. Every context read names its scope so the controller knows it is
-seeing a subset.
+request. Every context read names its scope so the controller knows it is seeing
+a subset.
 
-`controller.meta` records the most recently started controller pane and nothing
-more. It does not reserve control, and it excludes exactly one pane from `ego
-scan`. Several controllers may run at once; an earlier one keeps supervising its
-own workspace and becomes an ordinary detected agent pane to the newer one.
-Reports have no addressee, so a single shared event log means two watch loops
-both wake for the same event. One watch loop at a time is the rule.
+A controller is a record, `state/controllers/<id>/meta`, keyed like an agent id.
+Starting one therefore has no effect on one already running, and its launch
+script lives beside its record so a restart in place restores the same identity.
+The script exports `EGO_CONTROLLER_ID`, and each invocation resolves its own
+scope from that, from `$TMUX_PANE`, or from `EGO_AGENT_ID` when the caller is a
+worker. A human in a plain shell gets server scope. Because scope is data read at
+call time, `ego promote` changes it without a restart.
+
+A pane is a controller or a worker, never both. `ego scan` excludes every live
+controller pane and retires any agent record that claims one, so a controller
+from an earlier session is never adopted as a worker.
+
+Scope is a boundary as well as a filter. `require_in_scope` keys on a session, so
+one check covers both agent commands and workspace commands, and `spawn` cannot
+open a window or create a session in someone else's workspace. `--any-session` is
+the deliberate override. This is a coordination guard, not a security boundary: a
+caller that unsets `EGO_AGENT_ID` escapes it, and keeping server scope for humans
+is intended.
+
+Events carry the session they belong to, so `ego watch` wakes a session-scoped
+controller only for its own workspace. An event with no session, such as a fleet
+`scan`, reaches every controller. Each caller keeps its own cursor, so one
+controller consuming an event cannot hide it from another. Two server-scoped
+controllers still both wake for the same event, so one server-wide watch loop at
+a time remains the rule.
 
 Ownership and reporting are records, not messages. Nothing is pushed into a pane
 except an `ego send` inbox notice and an `ego press` keystroke, so a handoff or a
@@ -50,7 +67,7 @@ takeback never tells an agent to change behavior. An agent behaves like a
 controller because its launch prompt pointed it at `CONTROLLER.md`, and it
 reports because its launch prompt or onboarding message told it to.
 
-Discovery delegates identity to Agent Navigator. It matches recognized processes in each pane TTY's foreground process group, so window names are irrelevant and suspended background agents are excluded. Ego joins the detected pane IDs with its tmux inventory and excludes its own controller pane.
+Discovery delegates identity to Agent Navigator. It matches recognized processes in each pane TTY's foreground process group, so window names are irrelevant and suspended background agents are excluded. Ego joins the detected pane IDs with its tmux inventory and excludes every live controller pane.
 
 An Ego spawn records `origin=ego`, starts with `owner=ego`, and receives the reporting contract in its initial prompt. A discovered worker starts human-owned and does not report until it is onboarded.
 `onboard-workspace` scans the tmux server and sends that contract to every active, non-reporting worker in one session. It leaves ownership unchanged and does not resend the contract to workers already reporting.
