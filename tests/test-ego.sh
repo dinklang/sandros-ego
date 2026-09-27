@@ -101,7 +101,10 @@ grep -q '^Agent process: yes$' "$EGO_HOME/agents/alpha--agent-one/handoff.md"
 grep -q '^Observed screen: idle$' "$EGO_HOME/agents/alpha--agent-one/handoff.md"
 grep -q '^Last 20 pane lines:$' "$EGO_HOME/agents/alpha--agent-one/handoff.md"
 tmux -L "$SOCKET" send-keys -t alpha:agent-one 'echo long-running-marker' Enter
-sleep 0.5
+for _ in $(seq 1 50); do
+  tmux -L "$SOCKET" capture-pane -p -t alpha:agent-one | grep -qx 'long-running-marker' && break
+  sleep 0.1
+done
 handoff_output=$("$ROOT/bin/ego" handoff alpha--agent-one --summary "profiling is active" --next "collect a baseline")
 printf '%s\n' "$handoff_output" | grep -q '^handed off alpha--agent-one to Ego$'
 printf '%s\n' "$handoff_output" | grep -q '^long-running-marker$'
@@ -319,6 +322,8 @@ PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" start --session alpha --window ego-ki
 grep -q "^exec kiro-cli chat 'You are Sandro'\\\\''s Ego" "$EGO_HOME/controllers/alpha--ego-kiro/launch.sh"
 # The controller launches from the session root, not the neutral state directory.
 grep -q "^cd '$TMP'$" "$EGO_HOME/controllers/alpha--ego-kiro/launch.sh"
+# The same script resumes the previous conversation with --continue.
+grep -q '^  exec kiro-cli chat --resume$' "$EGO_HOME/controllers/alpha--ego-kiro/launch.sh"
 # The launch script restores this controller's own identity when re-run in place.
 grep -q "^export EGO_CONTROLLER_ID='alpha--ego-kiro'$" "$EGO_HOME/controllers/alpha--ego-kiro/launch.sh"
 # A controller covers its own session unless told otherwise.
@@ -508,7 +513,9 @@ if EGO_CONTROLLER_ID=alpha--ego-multi "$ROOT/bin/ego" scope +epsilon >/dev/null 
   printf 'a controller widened its own scope\n' >&2
   exit 1
 fi
-"$ROOT/bin/ego" scope alpha--ego-multi +epsilon | grep -q 'now covers alpha, zeta, epsilon$'
+"$ROOT/bin/ego" scope alpha--ego-multi +epsilon 2>"$TMP/overlap.err" | grep -q 'now covers alpha, zeta, epsilon$'
+# Two live controllers covering one session both wake for it, so Ego says so.
+grep -q 'epsilon is also covered by live controller epsilon--ego' "$TMP/overlap.err"
 EGO_CONTROLLER_ID=alpha--ego-multi "$ROOT/bin/ego" scope -zeta | grep -q 'now covers alpha, epsilon$'
 "$ROOT/bin/ego" scope alpha--ego-multi alpha,zeta >/dev/null
 grep -q '^scope=alpha,zeta$' "$EGO_HOME/controllers/alpha--ego-multi/meta"
@@ -523,6 +530,25 @@ grep -q '^scope=alpha,zeta,theta$' "$EGO_HOME/controllers/alpha--ego-multi/meta"
 EGO_CONTROLLER_ID=alpha--ego-multi "$ROOT/bin/ego" watch 0 >/dev/null
 "$ROOT/bin/ego" report theta--made blocked "listed session is stuck" >/dev/null
 EGO_CONTROLLER_ID=alpha--ego-multi "$ROOT/bin/ego" watch 0 | grep -q 'listed session is stuck'
+
+# reset writes the workspace note for every covered session and prints how to
+# restart; it never ends the controller's process itself.
+reset_output=$("$ROOT/bin/ego" reset alpha--ego-multi --note "carry this across the reset")
+printf '%s\n' "$reset_output" | grep -q '^wrote the workspace note for alpha, zeta, theta$'
+printf '%s\n' "$reset_output" | grep -q "controllers/alpha--ego-multi/launch.sh' --continue"
+grep -q '^Mode: reset$' "$EGO_HOME/workspaces/zeta/checkpoint.md"
+EGO_CONTROLLER_ID=alpha--ego-multi "$ROOT/bin/ego" context | grep -q '^carry this across the reset$'
+tmux -L "$SOCKET" list-windows -t alpha -F '#{window_name}' | grep -qx ego-multi
+if EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" reset zeta--ego >/dev/null 2>&1; then
+  printf 'a controller reset another controller\n' >&2
+  exit 1
+fi
+# checkpoint and stow remain as older names.
+"$ROOT/bin/ego" stow zeta --summary "older name" >/dev/null
+grep -q '^Mode: stow$' "$EGO_HOME/workspaces/zeta/checkpoint.md"
+# start --continue resumes through the same launch script.
+PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" start --session zeta --window ego-resumed --continue 2>/dev/null \
+  | grep -q 'started Ego zeta--ego-resumed'
 
 # Scope is a boundary, not only a display filter.
 if EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" peek alpha--agent-one >/dev/null 2>&1; then

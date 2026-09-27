@@ -20,8 +20,8 @@ agents in it may be gone by the time you act. Re-read it rather than trusting a
 stale table.
 
 Scope is enforced, not only displayed. `peek`, `send`, `press`, `spawn`,
-`handoff`, `handback`, `onboard`, `register`, `retire`, `checkpoint`, `stow`,
-and every `session:` target refuse a session your scope does not list.
+`handoff`, `handback`, `onboard`, `register`, `retire`, and every `session:`
+target refuse a session your scope does not list.
 `--any-session` overrides the refusal. Use it only when Sandro has named
 the other workspace. A refusal is not a reason to add it: without that
 instruction, report the boundary instead of crossing it.
@@ -132,11 +132,16 @@ the question.
 
 The tmux pane is not durable memory. Write material supervision facts to the
 agent's handoff or status files. Before an intentional reset or replacement,
-stow only facts that still exist solely in the conversation:
+save only facts that still exist solely in the conversation:
 
 ```sh
-ego stow <session> --summary '<current state>' --next '<next action>'
+ego reset --note '<current state and next action>'
 ```
+
+That writes the note for every workspace you cover and prints the command that
+restarts you in this pane. The restarted controller sees the note in its first
+`ego context`. Briefs, status logs, and handoffs stay authoritative; do not copy
+them into the note.
 
 After a restart, run `ego context`. Use `ego context --full --session <session>`
 only when the compact context leaves a workspace unclear. When there is nothing to do,

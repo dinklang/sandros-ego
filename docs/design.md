@@ -100,7 +100,7 @@ It records the current state and next action without requiring a model to stay a
 The first prototype does not import a model's private conversation history.
 The handoff note records the information needed for another supervisor to continue.
 
-Before an intentional controller reset, `ego stow` records only the volatile workspace delta and next action. Briefs, status logs, handoffs, and metadata remain authoritative and should not be copied into the checkpoint. A replacement controller starts with `ego session-start` and uses targeted recovery only when needed.
+Before an intentional controller reset, `ego reset --note` writes the workspace note for every session the controller covers, holding only the volatile delta and next action that exist nowhere else. Briefs, status logs, handoffs, and metadata remain authoritative and should not be copied into it. A replacement controller starts with `ego context`, which prints the note, and uses `context --full` only when needed. `reset` never ends the controller's process: it prints the launch script, which restarts the same identity with a fresh conversation, or resumes the most recent one with `--continue`. `checkpoint` and `stow` remain as older names that write the same note for one session.
 
 ## Retirement
 

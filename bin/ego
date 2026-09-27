@@ -65,14 +65,14 @@ Controllers:
   ego onboard <target>          ego offboard <id|session:window>
   ego handoff <target> --summary <text> [--next <text>]
   ego handback <target>
-  ego checkpoint <session> --summary <text> [--next <text>]
-  ego stow <session> --summary <text> [--next <text>]
+  ego reset [--note <text>]
   ego retire <target> | --stale [--session <session>] | --controller <id>
 
 Sandro:
   ego install
   ego start [--session <session>] [--window <name>] [--agent <codex|claude|kiro>]
-                         [--scope <session,...>]
+                         [--scope <session,...>] [--continue]
+  ego reset <controller-id> [--note <text>]
   ego scope [<controller-id>] [<session,...>|+<session>|-<session>]
   ego scan
   ego register <window|session:window> [--id <id>] [--root <path>]
@@ -82,7 +82,8 @@ Sandro:
 Older names: takeback (handback), handoff-workspace, takeback-workspace, and
 onboard-workspace (the session: target), session-start and recover (context,
 context --full), forget, prune, and archive-workspace (retire, purge),
-controllers and workspaces (list), promote (scope), init.
+controllers and workspaces (list), promote (scope), checkpoint and stow
+(reset --note), init.
 
 Environment:
   EGO_ROOT          Installation root. Default: ~/.ego
@@ -826,7 +827,27 @@ agent_executable() {
 # sandboxed to the workspace plus EGO_HOME; Claude and Kiro rely on their own
 # permission model, so only Codex needs the state directory added explicitly.
 launch_exec_line() {
-  local agent=$1 root=$2 prompt=$3
+  local agent=$1 root=$2 prompt=$3 resume=${4:-0}
+  if [ "$resume" -eq 1 ]; then
+    # Resume the most recent conversation in $root instead of starting a new
+    # one, keeping the same sandbox and state directory access.
+    case "$agent" in
+      codex)
+        printf 'exec codex resume --last --sandbox workspace-write --add-dir %s -C %s\n' \
+          "$(shell_quote "$EGO_HOME")" "$(shell_quote "$root")"
+        ;;
+      claude)
+        printf 'cd %s\n' "$(shell_quote "$root")"
+        printf 'exec claude --continue --add-dir %s\n' "$(shell_quote "$EGO_HOME")"
+        ;;
+      kiro)
+        printf 'cd %s\n' "$(shell_quote "$root")"
+        printf 'exec kiro-cli chat --resume\n'
+        ;;
+      *) die "cannot launch agent type '$agent'" ;;
+    esac
+    return 0
+  fi
   case "$agent" in
     codex)
       printf 'exec codex --sandbox workspace-write --add-dir %s -C %s %s\n' \
@@ -2543,6 +2564,7 @@ cmd_scope() {
   meta_set "$meta" updated_at "$(now)"
   append_event controller "$id" "scope=$new" "$own"
   printf 'controller %s now covers %s\n' "$id" "$(printf '%s' "$new" | sed 's/,/, /g')"
+  warn_scope_overlap "$id" "$new"
 }
 
 # Add a session the calling controller just created to its own scope, so it
@@ -2561,13 +2583,14 @@ add_session_to_caller_scope() {
 }
 
 cmd_start() {
-  local session= window=ego agent=claude scope= row pane launch prompt controller_dir guide id
+  local session= window=ego agent=claude scope= row pane launch prompt controller_dir guide id resume=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --session) [ $# -ge 2 ] || die "--session requires a value"; session=$2; shift 2 ;;
       --window) [ $# -ge 2 ] || die "--window requires a value"; window=$2; shift 2 ;;
       --agent) [ $# -ge 2 ] || die "--agent requires a value"; agent=$2; shift 2 ;;
       --scope) [ $# -ge 2 ] || die "--scope requires a value"; scope=$2; shift 2 ;;
+      --continue) resume=1; shift ;;
       *) die "unknown start option '$1'" ;;
     esac
   done
@@ -2605,16 +2628,96 @@ cmd_start() {
   enforce_controller_panes >/dev/null
   launch="$CONTROLLERS_DIR/$id/launch.sh"
   prompt="You are Sandro's Ego, controller $id. Read and follow $guide. Start by running $EGO_CLI_PATH context. Use $EGO_CLI_PATH for Ego commands."
+  # One script restarts the controller either way: plain for a fresh
+  # conversation, --continue to resume the most recent one in its directory.
   {
     printf '#!/bin/zsh\n'
     printf 'export EGO_HOME=%s\n' "$(shell_quote "$EGO_HOME")"
     printf 'export EGO_CONTROLLER_ID=%s\n' "$(shell_quote "$id")"
+    printf 'if [ "${1:-}" = --continue ]; then\n'
+    launch_exec_line "$agent" "$controller_dir" "$prompt" 1 | sed 's/^/  /'
+    printf 'fi\n'
     launch_exec_line "$agent" "$controller_dir" "$prompt"
   } > "$launch"
   chmod 700 "$launch"
-  tmux_cmd send-keys -t "$pane" "$(shell_quote "$launch")" Enter
+  if [ "$resume" -eq 1 ]; then
+    tmux_cmd send-keys -t "$pane" "$(shell_quote "$launch") --continue" Enter
+  else
+    tmux_cmd send-keys -t "$pane" "$(shell_quote "$launch")" Enter
+  fi
   append_event controller "$id" "$session:$window scope=$scope" "$session"
   printf 'started Ego %s at %s:%s covering %s\n' "$id" "$session" "$window" "$(printf '%s' "$scope" | sed 's/,/, /g')"
+  warn_scope_overlap "$id" "$scope"
+}
+
+# Warn when another live controller already covers one of these sessions. Both
+# would wake for the same events and could act twice, so one of them should
+# drop the session or be closed. A warning, not a refusal: Sandro may be
+# deliberately moving a workspace from one controller to another.
+warn_scope_overlap() {
+  local id=$1 list=$2 dir meta other other_list item
+  for dir in "$CONTROLLERS_DIR"/*; do
+    meta="$dir/meta"
+    [ -f "$meta" ] || continue
+    other=$(meta_get "$meta" id)
+    [ "$other" != "$id" ] || continue
+    [ "$(meta_get "$meta" active)" != no ] || continue
+    record_live_pane "$meta" >/dev/null 2>&1 || continue
+    other_list=$(controller_scope_list "$meta")
+    while IFS= read -r item; do
+      [ -n "$item" ] || continue
+      in_session_list "$item" "$other_list" || continue
+      printf "warning: %s is also covered by live controller %s; both will wake for its events, so drop it from one scope or close one controller\n" \
+        "$item" "$other" >&2
+    done <<< "$(printf '%s\n' "$list" | tr ',' '\n')"
+  done
+  return 0
+}
+
+# Prepare a controller for a fresh conversation. With --note, the text becomes
+# the workspace note for every session the controller covers; that is where
+# facts that live only in the conversation go. The next 'ego context' prints the
+# note, so the restarted controller needs no separate recovery step. Ego never
+# ends a controller's process itself: this prints the restart command instead.
+cmd_reset() {
+  local id= note= meta launch sessions session written=
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --note) [ $# -ge 2 ] || die "--note requires text"; note=$2; shift 2 ;;
+      --*) die "unknown reset option '$1'" ;;
+      *) [ -z "$id" ] || die "reset accepts one controller id"; id=$1; shift ;;
+    esac
+  done
+  ensure_home
+  if [ "$(caller_role)" = controller ]; then
+    local self
+    self=$(caller_controller_id)
+    [ -z "$id" ] || [ "$id" = "$self" ] || die "a controller resets only itself"
+    id=$self
+  fi
+  [ -n "$id" ] || die "reset requires a controller id when the caller is not a controller"
+  valid_id "$id" || die "invalid controller id '$id'"
+  meta=$(controller_meta "$id") || die "unknown controller '$id'; see 'ego list --controllers'"
+  if [ -n "$note" ]; then
+    command -v tmux >/dev/null 2>&1 && tmux_cmd list-sessions >/dev/null 2>&1 && scan_workspaces
+    sessions=$(controller_scope_list "$meta")
+    [ -n "$sessions" ] || sessions=$(meta_get "$meta" session)
+    while IFS= read -r session; do
+      [ -n "$session" ] || continue
+      if [ ! -f "$WORKSPACES_DIR/$(clean_id "$session")/meta" ]; then
+        printf 'warning: no workspace record for %s; its note was not written\n' "$session" >&2
+        continue
+      fi
+      write_workspace_checkpoint "$session" "$note" "" reset
+      append_event reset "$session" "$note" "$session"
+      written=${written:+$written, }$session
+    done <<< "$sessions"
+    [ -z "$written" ] || printf 'wrote the workspace note for %s\n' "$written"
+  fi
+  launch="$CONTROLLERS_DIR/$id/launch.sh"
+  printf 'To restart %s, end its current conversation, then run in its pane:\n' "$id"
+  printf '  %s              # fresh conversation\n' "$(shell_quote "$launch")"
+  printf '  %s --continue   # resume the most recent one\n' "$(shell_quote "$launch")"
 }
 
 command_name=${1:-help}
@@ -2707,5 +2810,6 @@ case "$command_name" in
   report) cmd_report "$@" ;;
   watch) cmd_watch "$@" ;;
   start) cmd_start "$@" ;;
+  reset) cmd_reset "$@" ;;
   *) usage >&2; die "unknown command '$command_name'" ;;
 esac

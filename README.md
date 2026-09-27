@@ -502,8 +502,15 @@ To restart the controller in place after a context reset, run its own generated
 launch script in the same pane instead of closing the window:
 
 ```sh
-~/.ego/state/controllers/<session>--<window>/launch.sh
+~/.ego/state/controllers/<session>--<window>/launch.sh              # fresh conversation
+~/.ego/state/controllers/<session>--<window>/launch.sh --continue   # resume the last one
 ```
+
+`ego reset --note '<state>'` saves what the conversation knows as the workspace
+note first and prints both commands. `ego start --continue` opens a new
+controller window that resumes the most recent conversation in that workspace's
+root. That is the right way to bring back an old controller conversation:
+resuming it by hand in a new pane leaves it without a controller identity.
 
 The script exports that controller's id, so a restart in place always restores
 the same identity and scope. `ego start` refuses a window that already exists.
@@ -538,32 +545,28 @@ session both wake on its events, so cover each session with one controller.
 
 ## Recovery
 
-Sandro's Ego recovers from workspace checkpoints, agent metadata, handoff notes, status logs, and live tmux checks.
-Each tmux session is a workspace, and each workspace can have a checkpoint:
+Sandro's Ego recovers from workspace notes, agent metadata, handoff notes, status logs, and live tmux checks.
+Each tmux session is a workspace, and each workspace can have one note. Before an
+intentional controller reset, store only the conversation facts that are missing
+from durable records:
 
 ```sh
-ego checkpoint AgentOrchestrator \
-  --summary "Two experiments are running. The parser change is complete." \
-  --next "Review the benchmark and decide whether to keep the cache."
+ego reset AgentOrchestrator--ego \
+  --note "The benchmark result is valid. The remaining choice is the cache policy. Next: ask Sandro to choose it, then resume optimizer."
 ```
 
-Read the saved checkpoint and current agents later:
+That writes the note for every workspace the controller covers and prints the
+command that restarts it. A controller resetting itself leaves out its id.
+`checkpoint` and `stow` remain as older names that write the note for one
+session. Read the note and current agents later:
 
 ```sh
 ego context --full --session AgentOrchestrator
 ```
 
-Before an intentional controller reset, Ego should store only conversation facts that are missing from durable records:
-
-```sh
-ego stow AgentOrchestrator \
-  --summary "The benchmark result is valid. The remaining choice is the cache policy." \
-  --next "Ask Sandro to choose the policy, then resume optimizer."
-```
-
 A replacement controller begins with `ego context`. That command scans tmux and prints compact context. It includes no more than five recent status lines per tracked agent. Use `ego context --full --session <session>` only when more workspace detail is needed.
 
-The checkpoint does not need a second model session.
+The note does not need a second model session.
 It survives even if tmux or Ego stops.
 One controller per workspace and one controller over several workspaces are both
 supported, and the per-workspace files keep recovery local and clear either way.
