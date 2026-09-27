@@ -88,33 +88,35 @@ The handoff note records the information needed for another supervisor to contin
 
 Before an intentional controller reset, `ego stow` records only the volatile workspace delta and next action. Briefs, status logs, handoffs, and metadata remain authoritative and should not be copied into the checkpoint. A replacement controller starts with `ego session-start` and uses targeted recovery only when needed.
 
-`archive-workspace` is the context-retirement operation. It archives the current checkpoint and hides that workspace and its agents from normal startup context. It does not terminate processes or delete code. Recovery can still inspect the records.
-
 ## Retirement
 
 A record can outlive what it describes. A tmux pane id is never reused while one
 server runs, so a recorded pane that is absent from the inventory is permanently
-gone, and `ego scan` retires that agent. A restarted server numbers its panes
-from `%0` again, so the same id can later name an unrelated pane. Every record
+gone, and a scan retires that agent. A restarted server numbers its panes from
+`%0` again, so the same id can later name an unrelated pane. Every record
 therefore stores the server's start time, and a pane matches a record only when
 that start time matches too. A record from an earlier server is retired, never
 refreshed onto the new pane, and a caller in that pane never inherits an old
 controller's scope. A record written before the stamp existed is trusted only
 when it was created after the running server started. The same rule retires a
 controller record whose pane is gone, which also removes that controller's event
-cursor. Workspace records are
-written only from live sessions, so a record for a session that no longer exists
-would otherwise never be revisited; `scan` marks it `live=no`, and `ego prune`
-archives it once its directory is also gone. A killed session whose directory
-survives stays recorded because it is still resumable.
+cursor.
 
-Retirement is deliberate, so a refresh preserves it. Only `register` and `spawn`
-return a record to active context. Without that, a rescan would silently undo
-`archive-workspace` and `forget`.
+Every `ego context` read begins with that scan, so retirement does not depend on
+anyone running `ego scan`. A scan logs an event only when it recorded or retired
+something. Workspace records are written only from live sessions; a scan marks a
+record `live=no` when its session is gone, and a workspace is in context exactly
+while its session is live.
 
-`ego forget` retires one record, and `--purge` is the single operation in the
-prototype that deletes anything. It removes Ego's bookkeeping for an agent whose
-pane is already gone, never a window, a directory, or a worktree.
+A scan cannot judge a window left open after its agent exited. `ego list
+--stale` names those candidates and prints the `tmux kill-window` line that would
+close each one, and `ego retire` takes one agent, a `session:` workspace, every
+candidate in scope, or a controller. Retirement is deliberate, so a refresh
+preserves it. Only `register` and `spawn` return a record to active context.
+
+`ego purge` is the single operation in the prototype that deletes anything. It
+removes Ego's bookkeeping for an agent whose pane is already gone, never a
+window, a directory, or a worktree.
 
 ## Context control
 

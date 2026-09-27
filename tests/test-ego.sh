@@ -295,12 +295,19 @@ grep -q '^process=yes$' "$EGO_HOME/agents/alpha--optimizer/meta"
 grep -q '^process=no$' "$EGO_HOME/agents/alpha--three/meta"
 "$ROOT/bin/ego" list | head -1 | grep -q $'STATE\tPROCESS\tAGENT'
 "$ROOT/bin/ego" list | grep 'alpha--three' | grep -q $'live\tno'
+# An open pane with no agent is a cleanup candidate that scan never retires.
+"$ROOT/bin/ego" list --stale | grep 'alpha--three' | grep -q $'no agent process\talpha:three\ttmux kill-window -t @'
+# A scan that changes nothing leaves no event.
+scans_before=$(grep -c $'\tscan\t' "$EGO_HOME/events.log")
+"$ROOT/bin/ego" scan >/dev/null
+test "$(grep -c $'\tscan\t' "$EGO_HOME/events.log")" -eq "$scans_before"
 
 tmux -L "$SOCKET" kill-session -t beta
-"$ROOT/bin/ego" archive-workspace beta >/dev/null
-grep -q '^state=archived$' "$EGO_HOME/workspaces/beta/meta"
+# archive-workspace is the older name for retiring every agent in a workspace.
+"$ROOT/bin/ego" archive-workspace beta | grep -q '^retired 1 agent records in workspace beta$'
+grep -q '^active=no$' "$EGO_HOME/agents/beta--agent-two/meta"
 if "$ROOT/bin/ego" context | grep -q '^beta'; then
-  printf 'archived workspace remained in active context\n' >&2
+  printf 'a workspace with no live session remained in active context\n' >&2
   exit 1
 fi
 
@@ -318,15 +325,29 @@ if "$ROOT/bin/ego" list active | grep -q 'alpha--agent-transient'; then
   exit 1
 fi
 
-# forget retires one record, and only --purge removes it.
-"$ROOT/bin/ego" forget alpha--agent-transient | grep -q 'already retired'
-"$ROOT/bin/ego" forget alpha--agent-transient --purge >/dev/null
-test ! -d "$EGO_HOME/agents/alpha--agent-transient"
-if "$ROOT/bin/ego" forget alpha--optimizer --purge >/dev/null 2>&1; then
-  printf 'forget purged an agent with a live pane\n' >&2
+# A context read joins tmux first, so a dead pane leaves context without a scan.
+tmux -L "$SOCKET" new-window -d -t alpha: -n agent-ctx -c "$TMP"
+"$ROOT/bin/ego" register alpha:agent-ctx --agent kiro >/dev/null
+tmux -L "$SOCKET" kill-window -t alpha:agent-ctx
+if "$ROOT/bin/ego" context | grep -q 'alpha--agent-ctx'; then
+  printf 'context showed an agent whose pane is gone\n' >&2
   exit 1
 fi
-"$ROOT/bin/ego" forget alpha--optimizer | grep -q '^retired alpha--optimizer'
+grep -q '^active=no$' "$EGO_HOME/agents/alpha--agent-ctx/meta"
+
+# retire marks one record inactive, and only purge removes it. forget is the
+# older name for both.
+"$ROOT/bin/ego" retire alpha--agent-transient | grep -q 'already retired'
+"$ROOT/bin/ego" forget alpha--agent-transient | grep -q 'already retired'
+"$ROOT/bin/ego" purge alpha--agent-transient >/dev/null
+test ! -d "$EGO_HOME/agents/alpha--agent-transient"
+"$ROOT/bin/ego" forget alpha--agent-ctx --purge >/dev/null
+test ! -d "$EGO_HOME/agents/alpha--agent-ctx"
+if "$ROOT/bin/ego" purge alpha--optimizer >/dev/null 2>&1; then
+  printf 'purge removed an agent with a live pane\n' >&2
+  exit 1
+fi
+"$ROOT/bin/ego" retire alpha:optimizer | grep -q '^retired alpha--optimizer'
 grep -q '^active=no$' "$EGO_HOME/agents/alpha--optimizer/meta"
 "$ROOT/bin/ego" scan >/dev/null
 grep -q '^active=no$' "$EGO_HOME/agents/alpha--optimizer/meta"
@@ -343,19 +364,21 @@ grep -q '^live=yes$' "$EGO_HOME/workspaces/delta/meta"
 tmux -L "$SOCKET" kill-session -t delta
 "$ROOT/bin/ego" scan >/dev/null
 grep -q '^live=no$' "$EGO_HOME/workspaces/delta/meta"
-grep -q '^state=active$' "$EGO_HOME/workspaces/delta/meta"
 if "$ROOT/bin/ego" context | grep -q '^delta'; then
   printf 'a workspace with no live session stayed in active context\n' >&2
   exit 1
 fi
-"$ROOT/bin/ego" prune | grep -q 'archived 0 workspace records'
-rmdir "$TMP/delta"
-"$ROOT/bin/ego" prune | grep -q 'archived 1 workspace records'
-grep -q '^state=archived$' "$EGO_HOME/workspaces/delta/meta"
-# An explicit archive is not undone by a later scan of a session that lives on.
-"$ROOT/bin/ego" archive-workspace gamma >/dev/null
+"$ROOT/bin/ego" list --workspaces | grep -q $'^delta\tprimary\tno\t'
+# retire --stale takes every cleanup candidate, and prune is its older name.
+"$ROOT/bin/ego" retire --stale | grep -q '^retired [0-9]* stale agent records$'
+"$ROOT/bin/ego" prune | grep -q '^retired 0 stale agent records$'
+# Retiring a workspace's agents is not undone by a later scan.
+tmux -L "$SOCKET" new-window -d -t gamma: -n agent-gamma -c "$TMP"
 "$ROOT/bin/ego" scan >/dev/null
-grep -q '^state=archived$' "$EGO_HOME/workspaces/gamma/meta"
+grep -q '^active=yes$' "$EGO_HOME/agents/gamma--agent-gamma/meta"
+"$ROOT/bin/ego" retire gamma: >/dev/null
+"$ROOT/bin/ego" scan >/dev/null
+grep -q '^active=no$' "$EGO_HOME/agents/gamma--agent-gamma/meta"
 
 # Each controller has its own record, so starting one changes nothing about
 # another, and scope resolves from the caller rather than a shared file.

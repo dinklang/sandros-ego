@@ -129,17 +129,19 @@ agent creating the worker makes this choice from the task.
 
 Use `ego takeback-workspace <session>` when Sandro resumes supervision of every
 active worker in one workspace. This changes ownership only and keeps reporting
-enabled. Use `ego archive-workspace <session>` only after the workspace is
-finished. It removes the workspace from active startup context while retaining
-recovery records. It does not terminate tmux or delete a worktree.
+enabled.
 
-`ego scan` retires an agent whose pane is gone, so a dead worker leaves context
-on its own. It also retires a controller record whose pane is gone, and any agent
-record that claims a live controller's pane. Run `ego prune` when a workspace
-record outlives both its tmux session and its directory. Use `ego forget <id>`
-for a single record that should not be tracked. Add `--purge` only when Sandro
-asks for the record itself to be removed. None of these touch a tmux window, a
-working directory, or a worktree.
+Every `ego context` read joins tmux first, so an agent whose pane is gone leaves
+context on its own, and so does a controller record whose pane is gone or any
+agent record that claims a live controller's pane. `ego list --stale` shows the
+cleanup candidates a scan cannot judge, such as an open window whose agent has
+exited, with the `tmux kill-window` command Sandro could run. Retire a record
+with `ego retire <id|session:window>`, every agent in a workspace with `ego
+retire <session>:`, every candidate in scope with `ego retire --stale`, or a
+dead controller with `ego retire --controller <id>`. Retire only what Sandro
+asked to clean up. A retired record stays on disk and returns with `register` or
+`spawn`. Use `ego purge <id>` only when Sandro asks for the record itself to be
+removed. None of these touch a tmux window, a working directory, or a worktree.
 
 For every takeback request, inspect the worker's latest durable report and live
 pane before changing ownership. After takeback, always give Sandro a short

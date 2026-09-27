@@ -356,56 +356,50 @@ Every event records the session it belongs to, so a session-scoped controller
 wakes only for its own workspace. An event that names no session, such as a
 fleet-wide `scan`, reaches every controller.
 
-## Finish a workspace
-
-Skipping `stow` avoids a new checkpoint, but it does not remove an older checkpoint. After the tmux session is finished, remove it from active controller context without deleting its records:
-
-```sh
-ego archive-workspace optimizer
-```
-
-This archives the checkpoint, marks its agent records inactive, and returns their ownership to the human. It does not kill tmux, delete source files, or remove a worktree. `ego recover optimizer` can still read the retained records. A later `ego scan` does not undo the archive, even when the tmux session lives on.
-
-## Retire stale records
+## Clean up agents and workspaces
 
 A tmux pane id is never reused while one server runs, so a pane that disappears
 is gone for good. A restarted server numbers panes from `%0` again, so Ego also
 records the server's start time and treats a matching id on a newer server as a
 different pane: the old record is retired, and the new pane gets its own.
-`ego scan` retires the record of any agent whose pane has vanished, which keeps
-dead workers out of every later context read. The same rule applies to a
-controller record, and retiring one also drops its event cursor. A workspace
-record is only written from live tmux sessions, so `scan` also marks a record
-`live=no` when its session is gone.
 
-Retire the records a scan cannot judge on its own with:
+Every `ego context` read joins tmux first. An agent whose pane has vanished is
+retired, which keeps dead workers out of every later read, and the same rule
+applies to a controller record, which also drops its event cursor. A workspace
+is in context while its tmux session is live.
 
-```sh
-ego prune
-```
-
-This archives a workspace whose tmux session and directory are both gone. A
-killed session whose directory survives stays recorded, because that workspace
-is still resumable. Nothing is deleted and no tmux window or worktree is touched.
-
-Retire one agent by hand with:
+A scan cannot judge a window you left open after its agent finished. List those
+cleanup candidates, with the reason and the command that would close each
+window:
 
 ```sh
-ego forget project-a--profile
+ego list --stale
 ```
 
-The record leaves startup context but remains available to `ego recover`. Add
-`--purge` to remove the record directory, including its brief, handoff, status
-log, and inbox. `--purge` refuses while the pane is still live. Registering or
-spawning the same id again puts it back into active context.
+Retire records with:
+
+```sh
+ego retire project-a--profile     # one agent, by id
+ego retire project-a:profile      # one agent, by session:window
+ego retire project-a:             # every agent in a workspace
+ego retire --stale                # every cleanup candidate in scope
+ego retire --controller Main--ego # a controller record
+```
+
+A retired record leaves context and stays on disk. Registering or spawning the
+same id again brings it back, and a later scan does not undo a retirement.
+`ego purge <id>` removes an agent's record directory, including its brief,
+handoff, status log, and inbox, and refuses while the pane is still live.
+Ego never closes a tmux window, deletes a working directory, or removes a
+worktree. `forget`, `prune`, and `archive-workspace` remain as older names.
 
 Use `ego list` to see the difference: the `STATE` column reads `live` or
 `missing` from tmux, the `PROCESS` column says whether the last scan found an
 agent process in that pane, and `ego list active` hides retired records
 entirely. A pane can be `live` with `process=no`, meaning the window is still
 open but its agent has exited. Ego keeps that record, because starting an agent
-in the same pane again reuses it. `ego controllers` is the same view for
-controller records.
+in the same pane again reuses it. `ego list --controllers` and `ego list
+--workspaces` are the same view for controller and workspace records.
 
 ## Start Ego
 
