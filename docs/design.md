@@ -84,7 +84,7 @@ reports because its launch prompt or onboarding message told it to.
 
 Discovery delegates identity to Agent Navigator. It matches recognized processes in each pane TTY's foreground process group, so window names are irrelevant and suspended background agents are excluded. Ego joins the detected pane IDs with its tmux inventory and excludes every live controller pane.
 
-An Ego spawn records `origin=ego`, starts with `owner=ego`, and receives the reporting contract in its initial prompt. A discovered worker starts human-owned and does not report until it is onboarded.
+An Ego spawn records `origin=ego`, starts with `owner=ego`, and its launch prompt tells it to run `ego context`. For a worker, that command prints its own view: the reporting contract, its brief, pending instructions, its workspace note, and its siblings. The contract lives in `bin/ego`, not in each prompt, so it changes without respawning anyone and a pasted onboarding message stays one line. A discovered worker starts human-owned and does not report until it is onboarded; its onboarding message tells it to run `ego context --agent <id>`, because Ego did not launch it and it has no `EGO_AGENT_ID`.
 `onboard-workspace` scans the tmux server and sends that contract to every active, non-reporting worker in one session. It leaves ownership unchanged and does not resend the contract to workers already reporting.
 
 ## Recovery

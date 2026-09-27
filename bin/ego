@@ -45,14 +45,16 @@ A target is an agent id, a window name in the current session, session:window,
 or session: for every agent in a workspace.
 
 Workers:
-  ego report <id> <working|idle|blocked|needs-decision|done|failed|note> <message...>
-  ego inbox <id>
-  ego ack <id> <message-id>
+  ego context [--agent <id>]
+  ego report [<id>] <working|idle|blocked|needs-decision|done|failed|note> <message...>
+  ego inbox [<id>]
+  ego ack [<id>] <message-id>
 
 Controllers:
   ego context [--session <session>] [--all] [--full]
   ego watch [seconds] [--all]
   ego list [active] [--session <session>] [--stale|--controllers|--workspaces]
+  ego inspect <target> [lines]
   ego peek <id> [lines]
   ego send <id> <message...>
   ego press <id> <enter|escape|y|n|p>
@@ -262,11 +264,18 @@ cmd_install() {
 # first time, when there is no installed copy at all.
 ensure_installed() {
   local install_dir=${EGO_INSTALL_DIR:-$EGO_ROOT/bin}
-  [ ! -x "$install_dir/ego" ] || return 0
-  [ -f "$REPO_ROOT/bin/ego" ] && [ -f "$REPO_ROOT/CONTROLLER.md" ] || return 0
-  cmd_install >&2
-  # Prompts must name the protected installed copy, not the repository.
-  EGO_CLI_PATH="$install_dir/ego"
+  if [ ! -x "$install_dir/ego" ]; then
+    [ -f "$REPO_ROOT/bin/ego" ] && [ -f "$REPO_ROOT/CONTROLLER.md" ] || return 0
+    cmd_install >&2
+  fi
+  prefer_installed_cli
+}
+
+# Prompts and pane notices must name the protected installed copy, not the
+# repository, even when this command was run from the repository.
+prefer_installed_cli() {
+  local install_dir=${EGO_INSTALL_DIR:-$EGO_ROOT/bin}
+  [ ! -x "$install_dir/ego" ] || EGO_CLI_PATH="$install_dir/ego"
 }
 
 # Warn when the running installed copy no longer matches its repository, which
@@ -1331,6 +1340,119 @@ print_stale_table() {
   done
 }
 
+# The reporting contract, in one place for every worker. Commands carry the id
+# so they work for an onboarded agent that has no EGO_AGENT_ID of its own.
+reporting_protocol() {
+  local id=$1 ego_cli=$2
+  cat <<EOF
+Report material phase changes, whoever supervises you:
+  $ego_cli report $id <working|idle|blocked|needs-decision|done|failed|note> <message>
+Use idle when no task is assigned. Use done when your assigned scope is
+complete, even if the broader project has a later external gate. Use blocked
+only when your assigned scope cannot proceed. Do not claim completion until the
+requested result is complete.
+
+Check instructions at natural checkpoints, and acknowledge each one you handle:
+  $ego_cli inbox $id
+  $ego_cli ack $id <message-id>
+
+Run $ego_cli context --agent $id again whenever you lose track. Supervision
+commands such as watch, handoff, send, and press belong to your controller.
+EOF
+}
+
+# What one worker needs to start or resume: who it is, how to report, its
+# brief, pending instructions, its workspace note, and its siblings.
+print_worker_context() {
+  local id=$1 meta dir session ego_cli file found=0 note other_dir other_meta latest
+  meta=$(agent_meta "$id")
+  [ -n "$meta" ] || exit 1
+  dir=${meta%/meta}
+  session=$(meta_get "$meta" session)
+  require_in_scope "$session"
+  prefer_installed_cli
+  if [ -n "${EGO_AGENT_ID:-}" ]; then
+    ego_cli=$EGO_CLI_PATH
+  else
+    ego_cli="EGO_HOME=$(shell_quote "$EGO_HOME") $(shell_quote "$EGO_CLI_PATH")"
+  fi
+  printf '# Sandro\x27s Ego worker context\n\nGenerated: %s\n' "$(now)"
+  printf 'Worker: %s\nWorkspace: %s\nTarget: %s:%s\nOwner: %s\n\n' "$id" "$session" \
+    "$session" "$(meta_get "$meta" window)" "$(meta_get "$meta" owner)"
+  printf '## How to report\n\n'
+  reporting_protocol "$id" "$ego_cli"
+  printf '\n## Brief\n\n'
+  if [ -s "$dir/brief.md" ]; then cat "$dir/brief.md"; else printf 'No brief recorded.\n'; fi
+  printf '\n## Pending instructions\n\n'
+  for file in "$dir/inbox"/*.msg; do
+    [ -f "$file" ] || continue
+    found=1
+    printf 'MESSAGE %s\n' "$(basename "$file" .msg)"
+    cat "$file"
+  done
+  [ "$found" -eq 1 ] || printf 'No pending messages.\n'
+  note="$WORKSPACES_DIR/$(clean_id "$session")/checkpoint.md"
+  if [ -f "$note" ]; then
+    printf '\n## Workspace note\n\n'
+    cat "$note"
+  fi
+  printf '\n## Other agents in this workspace\n\n'
+  found=0
+  for other_dir in "$AGENTS_DIR"/*; do
+    other_meta="$other_dir/meta"
+    [ -f "$other_meta" ] || continue
+    [ "$(meta_get "$other_meta" session)" = "$session" ] || continue
+    [ "$(meta_get "$other_meta" active)" != no ] || continue
+    [ "$(meta_get "$other_meta" id)" != "$id" ] || continue
+    latest=none
+    [ ! -s "$other_dir/status.log" ] || latest=$(tail -n 1 "$other_dir/status.log" | cut -f2)
+    printf '%s\t%s:%s\tlast report: %s\n' "$(meta_get "$other_meta" id)" "$session" \
+      "$(meta_get "$other_meta" window)" "$latest"
+    found=1
+  done
+  [ "$found" -eq 1 ] || printf 'None.\n'
+}
+
+# One call for what a controller checks before acting on an agent: its handoff
+# note, its latest report, and the last pane lines.
+print_inspection() {
+  local meta=$1 lines=${2:-60} dir pane
+  dir=${meta%/meta}
+  printf '# %s\n\n' "$(meta_get "$meta" id)"
+  printf 'Target: %s:%s\nOwner: %s\nReporting: %s\nAgent process: %s\n' \
+    "$(meta_get "$meta" session)" "$(meta_get "$meta" window)" "$(meta_get "$meta" owner)" \
+    "$(meta_get "$meta" reporting)" "$(meta_get "$meta" process)"
+  if [ -s "$dir/status.log" ]; then
+    printf 'Latest report: %s\n' "$(tail -n 1 "$dir/status.log" | tr '\t' ' ')"
+  else
+    printf 'Latest report: none recorded\n'
+  fi
+  if [ -f "$dir/handoff.md" ] && [ "$(meta_get "$meta" owner)" != human ]; then
+    printf '\n'
+    # The handoff's own snapshot is older than the pane lines below.
+    awk '/^## Worker state at handoff$/ { exit } { print }' "$dir/handoff.md"
+  fi
+  if pane=$(record_live_pane "$meta"); then
+    printf 'Last %s pane lines:\n\n````text\n' "$lines"
+    tmux_cmd capture-pane -p -J -t "$pane" -S "-$lines" 2>/dev/null \
+      | awk -v n="$lines" '{ rows[NR] = $0; if ($0 ~ /[^[:space:]]/) last = NR }
+          END { first = last - n + 1; if (first < 1) first = 1; for (i = first; i <= last; i++) print rows[i] }'
+    printf '````\n'
+  else
+    printf '\nPane: gone\n'
+  fi
+}
+
+cmd_inspect() {
+  [ $# -ge 1 ] && [ $# -le 2 ] || die "inspect requires one agent and an optional line count"
+  local id meta lines=${2:-60}
+  case "$lines" in ''|*[!0-9]*) die "lines must be a positive integer" ;; esac
+  id=$(resolve_agent_ref "$1") || die "unknown agent '$1'"
+  meta=$(agent_meta "$id")
+  require_in_scope "$(meta_get "$meta" session)"
+  print_inspection "$meta" "$lines"
+}
+
 cmd_list() {
   ensure_home
   local what=agents active_only= filter=
@@ -1361,15 +1483,27 @@ cmd_list() {
 
 cmd_context() {
   ensure_home
-  local filter= chosen=0 all=0 full=0
+  local filter= chosen=0 all=0 full=0 agent_view=
   while [ $# -gt 0 ]; do
     case "$1" in
       --session) [ $# -ge 2 ] || die "--session requires a value"; filter=$2; chosen=1; shift 2 ;;
       --all) all=1; chosen=1; shift ;;
       --full) full=1; shift ;;
+      --agent) [ $# -ge 2 ] || die "--agent requires an id"; agent_view=$2; shift 2 ;;
       *) die "unknown context option '$1'" ;;
     esac
   done
+  # A worker gets its own view: brief, inbox, protocol, and its workspace. An
+  # agent Ego did not launch has no EGO_AGENT_ID, so it names itself with
+  # --agent, as its onboarding message tells it to.
+  if [ -z "$agent_view" ] && [ "$(caller_role)" = worker ] && [ "$chosen" -eq 0 ]; then
+    agent_view=$EGO_AGENT_ID
+  fi
+  if [ -n "$agent_view" ]; then
+    agent_view=$(self_or_named_agent "$agent_view") || exit 1
+    print_worker_context "$agent_view"
+    return 0
+  fi
   # A worker reads its own workspace only.
   if [ "$(caller_role)" = worker ]; then
     [ "$all" -eq 0 ] || die "--all is not available to a worker"
@@ -1852,6 +1986,9 @@ cmd_takeback() {
     printf 'latest report: none recorded\n'
   fi
   printf 'reporting remains %s\n' "$(meta_get "$meta" reporting)"
+  # The raw material for the return brief: note, report, and live pane.
+  printf '\n'
+  print_inspection "$meta"
 }
 
 cmd_takeback_workspace() {
@@ -1998,7 +2135,10 @@ cmd_spawn() {
       printf 'exec /bin/zsh -lc %s\n' "$(shell_quote "$command_text")"
     } > "$launch"
   else
-    prompt="You are worker $id, tracked through Sandro's Ego. Read $AGENTS_DIR/$id/brief.md. Work in $root. Report material phase changes regardless of who is supervising with: $EGO_CLI_PATH report $id <working|idle|blocked|needs-decision|done|failed|note> <message>. Use idle when no task is assigned. Use done when your assigned scope is complete, even if the broader project has a later external gate. Use blocked only when the assigned scope cannot proceed. Check pending instructions at natural checkpoints with: $EGO_CLI_PATH inbox $id. Acknowledge each handled message with: $EGO_CLI_PATH ack $id <message-id>. Do not claim completion until the requested result is complete."
+    # The prompt only points at 'ego context', which prints the brief, the inbox,
+    # and the reporting protocol. The protocol then ships with bin/ego and
+    # changes without respawning anyone.
+    prompt="You are worker $id, tracked by Sandro's Ego. Work in $root. Run $EGO_CLI_PATH context now, and again whenever you lose track: it prints your brief, your pending instructions, and how to report."
     {
       printf '#!/bin/zsh\n'
       printf 'export EGO_HOME=%s\n' "$(shell_quote "$EGO_HOME")"
@@ -2031,6 +2171,7 @@ cmd_peek() {
 
 queue_message() {
   local id=$1 text=$2 meta pane dir inbox message_id tmp notice buffer ego_cli suffix=0
+  prefer_installed_cli
   meta=$(agent_meta "$id")
   # Callers invoke this through a command substitution, where bash ignores
   # set -e, so a failed lookup has to be checked rather than trusted to abort.
@@ -2147,8 +2288,9 @@ cmd_onboard() {
   fi
   meta=$(agent_meta "$id")
   require_in_scope "$(meta_get "$meta" session)"
+  prefer_installed_cli
   ego_cli="EGO_HOME=$(shell_quote "$EGO_HOME") $(shell_quote "$EGO_CLI_PATH")"
-  message="Join Ego's reporting protocol while keeping the current human workflow. Report only material phase changes with: $ego_cli report $id <working|idle|blocked|needs-decision|done|failed|note> <message>. Use idle when no task is assigned. Use done when your assigned scope is complete, even if the broader project has a later external gate. Use blocked only when the assigned scope cannot proceed. Check instructions at natural checkpoints with: $ego_cli inbox $id. Acknowledge each handled instruction with: $ego_cli ack $id <message-id>. Reporting stays active whether owner is human or ego."
+  message="Join Sandro's Ego reporting while keeping your current workflow. You are agent $id. Run $ego_cli context --agent $id now: it prints how to report, how to read instructions, and your workspace. Reporting stays active whether Sandro or Ego supervises you."
   message_id=$(queue_message "$id" "$message") \
     || die "could not reach '$id'; its pane may be gone, so run 'ego scan'"
   [ -n "$message_id" ] || die "could not reach '$id'; its pane may be gone, so run 'ego scan'"
@@ -2555,6 +2697,7 @@ case "$command_name" in
   takeback-workspace) require_tmux; cmd_takeback_workspace "$@" ;;
   recover) cmd_recover "$@" ;;
   handback|takeback) cmd_takeback "$@" ;;
+  inspect) require_tmux; cmd_inspect "$@" ;;
   offboard) require_tmux; cmd_offboard "$@" ;;
   peek) require_tmux; cmd_peek "$@" ;;
   send) require_tmux; cmd_send "$@" ;;

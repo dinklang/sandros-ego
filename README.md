@@ -224,7 +224,17 @@ ego onboard project-a:
 The command scans first, skips agents that already report, and leaves ownership unchanged. Agents whose panes are unavailable are reported and skipped.
 
 The agent then reports material changes whether its owner is `human` or `ego`.
-It keeps its existing conversation and working directory. Onboarding sends only the reporting and inbox contract. It does not make the worker read Ego's workspace checkpoint, handoff, or controller instructions.
+It keeps its existing conversation and working directory. Onboarding sends one
+short instruction: run `ego context --agent <id>`. That prints the worker's own
+view: how to report, how to read and acknowledge instructions, its brief, its
+pending messages, its workspace note, and the other agents in its workspace. A
+worker Ego spawned gets the same view from plain `ego context`, since its launch
+script exports its id. The protocol text lives in `bin/ego`, so updating Ego
+updates it for every worker without a respawn.
+
+`ego inspect <id>` is the controller's one-call look at an agent before acting:
+its handoff note, latest report, and last 60 pane lines. `ego handback` prints
+the same bundle.
 
 ## Hand off an agent
 

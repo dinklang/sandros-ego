@@ -115,8 +115,9 @@ For an Ego-owned agent:
 1. Read its handoff note. Its "Worker state at handoff" section shows what the
    worker was doing when it was handed off, including a running process the
    summary may not mention.
-2. Inspect its latest report and the last 60 pane lines before sending anything.
-   Read more pane history only when those do not explain the current state.
+2. Run `ego inspect <id>` before sending anything. It prints the handoff note,
+   the latest report, and the last 60 pane lines in one call. Read more pane
+   history only when those do not explain the current state.
 3. Preserve the workflow Sandro already established.
 4. Ask Sandro about product choices, destructive operations, credentials, or an
    unclear change in scope.
@@ -162,8 +163,9 @@ asked to clean up. A retired record stays on disk and returns with `register` or
 `spawn`. Use `ego purge <id>` only when Sandro asks for the record itself to be
 removed. None of these touch a tmux window, a working directory, or a worktree.
 
-For every takeback request, inspect the worker's latest durable report and live
-pane before changing ownership. After takeback, always give Sandro a short
+For every handback request, run `ego handback <id>`: it changes ownership and
+prints the same bundle as `ego inspect`, which is the material for the return
+brief. After handback, always give Sandro a short
 return brief with the current state, the latest result or blocker, and the next
 known action. Do not enter another watch interval after takeback unless Sandro
 asks you to keep monitoring something else.

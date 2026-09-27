@@ -180,6 +180,9 @@ test "$optimizer_messages_before" -eq "$optimizer_messages_after"
 takeback_output=$("$ROOT/bin/ego" takeback alpha--agent-one)
 printf '%s\n' "$takeback_output" | grep -q 'latest report:.*working.*baseline started'
 printf '%s\n' "$takeback_output" | grep -q '^reporting remains on$'
+printf '%s\n' "$takeback_output" | grep -q '^Last 60 pane lines:$'
+"$ROOT/bin/ego" inspect alpha--agent-one 5 | grep -q '^Last 5 pane lines:$'
+"$ROOT/bin/ego" inspect alpha:agent-one | grep -q '^Latest report: '
 grep -q '^owner=human$' "$EGO_HOME/agents/alpha--agent-one/meta"
 "$ROOT/bin/ego" handoff agent-one --session alpha --summary "short selector" >/dev/null
 grep -q '^owner=ego$' "$EGO_HOME/agents/alpha--agent-one/meta"
@@ -298,6 +301,12 @@ PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" spawn kiro-worker --session alpha --r
 grep -q '^agent=kiro$' "$EGO_HOME/agents/alpha--kiro-worker/meta"
 grep -q '^reporting=on$' "$EGO_HOME/agents/alpha--kiro-worker/meta"
 grep -q "^exec kiro-cli chat 'You are worker alpha--kiro-worker" "$EGO_HOME/agents/alpha--kiro-worker/launch.sh"
+# The launch prompt only points at context, which carries the protocol.
+grep -q "Run $EGO_ROOT/bin/ego context now" "$EGO_HOME/agents/alpha--kiro-worker/launch.sh"
+if grep -q 'report alpha--kiro-worker' "$EGO_HOME/agents/alpha--kiro-worker/launch.sh"; then
+  printf 'the launch prompt still embeds the reporting protocol\n' >&2
+  exit 1
+fi
 grep -q "^cd '$TMP'$" "$EGO_HOME/agents/alpha--kiro-worker/launch.sh"
 if "$ROOT/bin/ego" spawn bad-agent --session alpha --root "$TMP" --agent gemini >/dev/null 2>&1; then
   printf 'spawn accepted a non-launchable agent\n' >&2
@@ -575,7 +584,21 @@ if EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" context --all >/dev/null 2>&1; then
   printf 'a worker read every workspace\n' >&2
   exit 1
 fi
-EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" context | grep -q '^Scope: session alpha\.'
+# A worker's context is its own: who it is, how to report, its brief, and its
+# pending instructions.
+worker_context=$(EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" context)
+printf '%s\n' "$worker_context" | grep -q '^Worker: alpha--three$'
+printf '%s\n' "$worker_context" | grep -q '^## How to report$'
+printf '%s\n' "$worker_context" | grep -q 'report alpha--three <working|idle|blocked|needs-decision|done|failed|note> <message>$'
+printf '%s\n' "$worker_context" | grep -q '^test worker$'
+printf '%s\n' "$worker_context" | grep -q '^## Other agents in this workspace$'
+if EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" context --agent alpha--agent-one >/dev/null 2>&1; then
+  printf 'a worker read another worker context\n' >&2
+  exit 1
+fi
+# An onboarded agent names itself, since Ego did not launch it.
+"$ROOT/bin/ego" context --agent alpha--agent-one | grep -q '^Worker: alpha--agent-one$'
+grep -rq 'context --agent alpha--agent-one now' "$EGO_HOME/agents/alpha--agent-one/inbox"
 if EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" peek alpha--agent-one --any-session >/dev/null 2>&1; then
   printf 'a worker used --any-session\n' >&2
   exit 1
