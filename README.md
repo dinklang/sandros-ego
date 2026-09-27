@@ -22,12 +22,16 @@ The prototype can:
 - Keep a controller inside the workspaces its scope lists.
 - Change a running controller's scope without restarting it.
 - Rebuild its view after a restart from tmux and files on disk.
-- Record a recovery checkpoint for each workspace session.
+- Tell panes apart across tmux server restarts, which reuse pane ids.
 - Launch Codex, Claude, or Kiro agents.
-- Retire the records of panes and workspaces that no longer exist.
+- Retire the records of panes and workspaces that no longer exist, and list the
+  cleanup candidates a scan cannot judge.
+- Record each worker's live state in its handoff note.
+- Limit each command to the roles that should run it.
+- Give each worker its own startup context with its brief, inbox, and protocol.
 - Queue durable instructions and record worker acknowledgements.
 - Create an optional Git branch and worktree for a spawned agent.
-- Save a compact pre-restart workspace checkpoint.
+- Save a compact pre-reset workspace note and restart or resume a controller.
 
 It does not merge code, remove windows, or remove worktrees. Agent Navigator's screen status is only an observation, never a durable worker report.
 Those can be added after the handoff model works well in daily use.
@@ -625,5 +629,5 @@ The notice can still collide with unfinished input. Inspect the pane first with 
 
 The prototype never closes a window or deletes a working directory.
 That is intentional while the handoff workflow is still being tested.
-`ego forget --purge` is the one command that deletes anything, and it only
+`ego purge` is the one command that deletes anything, and it only
 removes Ego's own record of an agent whose pane is already gone.

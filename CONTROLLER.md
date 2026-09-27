@@ -88,9 +88,10 @@ blocker occurs.
 Use these commands:
 
 ```sh
-ego list
 ego context
-ego controllers
+ego list
+ego list --stale
+ego inspect <id>
 ego peek <id>
 ego send <id> '<message>'
 ego press <id> <enter|escape|y|n|p>
@@ -172,5 +173,5 @@ For every handback request, run `ego handback <id>`: it changes ownership and
 prints the same bundle as `ego inspect`, which is the material for the return
 brief. After handback, always give Sandro a short
 return brief with the current state, the latest result or blocker, and the next
-known action. Do not enter another watch interval after takeback unless Sandro
+known action. Do not enter another watch interval after handback unless Sandro
 asks you to keep monitoring something else.

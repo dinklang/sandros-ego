@@ -55,8 +55,8 @@ Scope is a boundary as well as a filter. `require_in_scope` keys on a session, s
 one check covers both agent commands and workspace commands, and `spawn` cannot
 open a window in someone else's workspace. `--any-session` is
 the deliberate override. This is a coordination guard, not a security boundary: a
-caller that unsets `EGO_AGENT_ID` escapes it, and keeping server scope for humans
-is intended.
+caller that unsets `EGO_AGENT_ID` escapes it, and giving humans every session is
+intended.
 
 Roles bound commands the way scope bounds sessions. Each invocation is a
 controller, a worker, or Sandro, resolved in the same order as scope, and one
@@ -78,7 +78,7 @@ covered by one controller at a time.
 
 Ownership and reporting are records, not messages. Nothing is pushed into a pane
 except an `ego send` inbox notice and an `ego press` keystroke, so a handoff or a
-takeback never tells an agent to change behavior. An agent behaves like a
+handback never tells an agent to change behavior. An agent behaves like a
 controller because its launch prompt pointed it at `CONTROLLER.md`, and it
 reports because its launch prompt or onboarding message told it to.
 
@@ -179,8 +179,9 @@ The agent that creates a worker chooses isolation from the task. Independent edi
 - A composer check before ringing the durable instruction inbox.
 - A tmux status indicator for human-owned and Ego-owned windows.
 - Better completion signals for Codex and other agent commands.
-- Explicit cleanup after work has landed.
 - Small workflow templates for profiling, optimization, review, and test runs.
+- Hiding finished agents whose windows stay open (dormancy) from the default
+  context. Undecided.
 - `owner` naming which controller supervises a worker, instead of the two-value
   `human` or `ego` field, so a handoff can be addressed and a retired
   controller's workers can be reassigned.
