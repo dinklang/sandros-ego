@@ -257,6 +257,31 @@ cmd_install() {
   printf 'installed Ego at %s\n' "$install_dir/ego"
 }
 
+# The installed copy is deliberately separate from the repository, so an
+# uncommitted edit never goes live on its own. Installing is automatic only the
+# first time, when there is no installed copy at all.
+ensure_installed() {
+  local install_dir=${EGO_INSTALL_DIR:-$EGO_ROOT/bin}
+  [ ! -x "$install_dir/ego" ] || return 0
+  [ -f "$REPO_ROOT/bin/ego" ] && [ -f "$REPO_ROOT/CONTROLLER.md" ] || return 0
+  cmd_install >&2
+  # Prompts must name the protected installed copy, not the repository.
+  EGO_CLI_PATH="$install_dir/ego"
+}
+
+# Warn when the running installed copy no longer matches its repository, which
+# means repository changes are waiting for 'ego install'.
+warn_if_drifted() {
+  local install_dir=${EGO_INSTALL_DIR:-$EGO_ROOT/bin} guide=${EGO_CONTROLLER_GUIDE:-$EGO_ROOT/CONTROLLER.md}
+  [ "$SCRIPT_DIR" = "$(cd "$install_dir" 2>/dev/null && pwd)" ] || return 0
+  [ -f "$REPO_ROOT/bin/ego" ] || return 0
+  if ! cmp -s "$REPO_ROOT/bin/ego" "$install_dir/ego" \
+    || { [ -f "$REPO_ROOT/CONTROLLER.md" ] && ! cmp -s "$REPO_ROOT/CONTROLLER.md" "$guide"; }; then
+    printf "warning: installed Ego differs from %s; run 'ego install' to update it\n" "$REPO_ROOT" >&2
+  fi
+  return 0
+}
+
 tmux_cmd() {
   if [ -n "${EGO_TMUX_SOCKET:-}" ]; then
     command tmux -L "$EGO_TMUX_SOCKET" "$@"
@@ -1294,6 +1319,7 @@ cmd_context() {
       *) die "unknown context option '$1'" ;;
     esac
   done
+  warn_if_drifted
   # Every read starts from a fresh join of tmux and the records, so a dead pane
   # never reaches context just because nobody ran 'ego scan'.
   if command -v tmux >/dev/null 2>&1 && tmux_cmd list-sessions >/dev/null 2>&1; then
@@ -1834,6 +1860,7 @@ cmd_spawn() {
   fi
   require_tmux
   ensure_home
+  ensure_installed
   if [ -z "$session" ] && [ -n "${TMUX:-}" ]; then
     session=$(tmux_cmd display-message -p '#S')
   fi
@@ -2318,6 +2345,8 @@ cmd_start() {
   command -v "$(agent_executable "$agent")" >/dev/null 2>&1 || die "$(agent_executable "$agent") is not installed"
   require_tmux
   ensure_home
+  ensure_installed
+  warn_if_drifted
   guide=$CONTROLLER_GUIDE
   [ -f "$guide" ] || guide="$REPO_ROOT/CONTROLLER.md"
   [ -f "$guide" ] || die "controller guide is missing; run 'ego install'"

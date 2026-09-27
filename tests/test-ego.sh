@@ -52,6 +52,8 @@ cleanup() {
 trap cleanup EXIT
 
 export EGO_HOME="$TMP/state"
+# Keep every command away from the real ~/.ego installation.
+export EGO_ROOT="$TMP/live-root"
 export EGO_TMUX_SOCKET="$SOCKET"
 export EGO_AGENT_NAVIGATOR="$TMP/fake-agent-navigator"
 
@@ -230,7 +232,24 @@ done
 
 "$ROOT/bin/ego" context --full | grep -q '^# Recovery view$'
 
-"$ROOT/bin/ego" spawn three --session alpha --root "$TMP" --command 'sleep 5' --brief "test worker" >/dev/null
+test ! -e "$EGO_ROOT/bin/ego"
+"$ROOT/bin/ego" spawn three --session alpha --root "$TMP" --command 'sleep 5' --brief "test worker" >/dev/null 2>&1
+# The first spawn or start installs Ego when no installed copy exists yet.
+test -x "$EGO_ROOT/bin/ego"
+cmp -s "$ROOT/bin/ego" "$EGO_ROOT/bin/ego"
+test -f "$EGO_ROOT/CONTROLLER.md"
+# The installed copy warns when it no longer matches its repository.
+if "$EGO_ROOT/bin/ego" context 2>&1 >/dev/null | grep -q 'installed Ego differs'; then
+  printf 'a matching installed copy reported drift\n' >&2
+  exit 1
+fi
+printf '\n' >> "$EGO_ROOT/CONTROLLER.md"
+"$EGO_ROOT/bin/ego" context 2>&1 >/dev/null | grep -q "installed Ego differs from $ROOT; run 'ego install'"
+"$ROOT/bin/ego" install >/dev/null
+if "$EGO_ROOT/bin/ego" context 2>&1 >/dev/null | grep -q 'installed Ego differs'; then
+  printf 'a reinstalled copy still reported drift\n' >&2
+  exit 1
+fi
 test -f "$EGO_HOME/agents/alpha--three/meta"
 grep -q '^reporting=unknown$' "$EGO_HOME/agents/alpha--three/meta"
 grep -q '^owner=ego$' "$EGO_HOME/agents/alpha--three/meta"

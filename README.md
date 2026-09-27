@@ -112,11 +112,9 @@ Add Ego to the shell path in `~/.zshrc`, `~/.bashrc`, or the equivalent file:
 export PATH="$HOME/.ego/bin:$PATH"
 ```
 
-Open a new shell or reload that configuration, then initialize the state:
-
-```sh
-ego init
-```
+Open a new shell or reload that configuration. The state directory is created on
+first use. If you skip `ego install`, the first `ego start` or `ego spawn` run
+from the repository installs Ego for you; later installs are always explicit.
 
 The installation lives under `~/.ego`: protected executable code is in `bin/`,
 controller instructions are in `CONTROLLER.md`, and mutable records are in
@@ -183,6 +181,10 @@ controller:
 ```sh
 ./bin/ego install
 ```
+
+Ego never copies the repository over the installed copy on its own, so an
+uncommitted edit cannot go live by accident. When the two differ, `ego start`
+and `ego context` print a warning naming the repository.
 
 ## Use your existing windows
 
