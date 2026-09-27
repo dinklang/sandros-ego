@@ -8,34 +8,35 @@ to you.
 At the start of every controller session, run:
 
 ```sh
-ego session-start
+ego context
 ```
 
-That reads the scope recorded when this controller started. A controller in a
-workspace session works in that session alone; a controller in a generic session
-supervises the whole tmux server. The scope line at the top of the output says
-which. Widen a single read with `ego context --all` or narrow it with `ego
+That scans tmux and reads the sessions this controller covers: its own session
+unless Sandro has added more. The scope line at the top of the output names
+them. Widen a single read with `ego context --all` or narrow it with `ego
 context --session <session>` when a question needs another workspace. Do not
 treat the startup context as a live view: it is a snapshot, and workspaces or
 agents in it may be gone by the time you act. Re-read it rather than trusting a
 stale table.
 
-Scope is enforced, not only displayed. With session scope, `peek`, `send`,
-`press`, `spawn`, `handoff`, `handback`, `onboard`, `register`, `retire`,
-`checkpoint`, `stow`, and every `session:` target refuse a session that is not
-yours. `--any-session` overrides the refusal. Use it only when Sandro has named
+Scope is enforced, not only displayed. `peek`, `send`, `press`, `spawn`,
+`handoff`, `handback`, `onboard`, `register`, `retire`, `checkpoint`, `stow`,
+and every `session:` target refuse a session your scope does not list.
+`--any-session` overrides the refusal. Use it only when Sandro has named
 the other workspace. A refusal is not a reason to add it: without that
 instruction, report the boundary instead of crossing it.
 
 Other controllers may be running. Starting this one did not stop them, they keep
-their own records, and they may still be supervising their own workspaces. Run
-only one server-wide `ego watch` loop so two controllers do not both react to the
-same event. A session-scoped `watch` wakes only for its own workspace.
+their own records, and they may still be supervising their own workspaces. Two
+controllers whose scopes list the same session both wake for its events, so a
+session should be covered by one controller at a time.
 
-Ask Sandro before changing scope. `ego promote` takes the whole server and needs
-no restart, but a wider scope means this controller can now act on workspaces
-another controller owns. `ego controllers` lists every controller, its session,
-its scope, and whether its pane is still live.
+Ask Sandro before changing scope. `ego scope +<session>` adds a workspace and
+`ego scope -<session>` drops one, with no restart, but a wider scope means this
+controller can now act on workspaces another controller owns. A workspace you
+create with `ego spawn --session <new>` joins your scope on its own. `ego list
+--controllers` lists every controller, its session, its scope, and whether its
+pane is still live.
 
 Use the protected `ego` executable named in the launch prompt. This is a
 temporary workaround for the Codex workspace sandbox. The narrow command rule

@@ -70,8 +70,8 @@ Controllers:
 Sandro:
   ego install
   ego start [--session <session>] [--window <name>] [--agent <codex|claude|kiro>]
-                         [--scope <session|server>]
-  ego promote [<controller-id>] [--scope <session|server>]
+                         [--scope <session,...>]
+  ego scope [<controller-id>] [<session,...>|+<session>|-<session>]
   ego scan
   ego register <window|session:window> [--id <id>] [--root <path>]
                          [--agent <type>]
@@ -80,7 +80,7 @@ Sandro:
 Older names: takeback (handback), handoff-workspace, takeback-workspace, and
 onboard-workspace (the session: target), session-start and recover (context,
 context --full), forget, prune, and archive-workspace (retire, purge),
-controllers and workspaces (list), init.
+controllers and workspaces (list), promote (scope), init.
 
 Environment:
   EGO_ROOT          Installation root. Default: ~/.ego
@@ -91,7 +91,7 @@ Environment:
                     script; resolved from the tmux pane otherwise.
 
 Scope:
-  A session-scoped controller may only act on its own workspace. Add
+  A controller may only act on the sessions its scope lists. Add
   --any-session to any command to cross that boundary deliberately.
 EOF
 }
@@ -161,7 +161,7 @@ Wait for an actionable event. The default timeout is 300 seconds. A timeout
 prints a quiet-period message and exits successfully. --all also wakes for
 routine events.
 
-A session-scoped controller wakes only for events in its own session, plus
+A controller wakes only for events in the sessions its scope lists, plus
 fleet-wide events that name no session. --all widens the event kinds, not the
 scope.
 
@@ -215,23 +215,27 @@ EOF
       ;;
     context|session-start)
       cat <<'EOF'
-Usage: ego context [--session <session>] [--all]
+Usage: ego context [--session <session>] [--all] [--full]
 
-Scan tmux, then print startup context. Scope comes from the calling
-controller's own record: a controller in a workspace session sees only that
-session, a controller in a generic session sees the whole server. --session
-narrows to one session and --all forces the whole server. session-start is an
-older name.
+Scan tmux, then print startup context for the sessions the calling
+controller's scope lists, its own session by default. --session narrows to one
+session, --all forces the whole server, and --full adds the recovery view:
+workspace records whose session is gone, their latest checkpoint, and each
+agent's endpoint. session-start and recover are older names.
 EOF
       ;;
-    promote)
+    scope|promote)
       cat <<'EOF'
-Usage: ego promote [<controller-id>] [--scope <session|server>]
+Usage: ego scope
+       ego scope <session,...>|+<session>|-<session>
+       ego scope <controller-id> <session,...>|+<session>|-<session>
 
-Change a running controller's scope without restarting it. The id defaults to
-the calling controller. --scope defaults to server, which lets a controller
-already working in one workspace supervise the whole tmux server. Pass
---scope session to narrow it back.
+Show or change which sessions a controller covers, without restarting it. A
+controller covers its own session by default. A list replaces the scope, +A
+adds a session, and -A removes one. With one argument the calling controller
+is changed; name the controller first to change another. A controller that
+spawns into a new session gets it added. promote is the older name: it lists
+every session live right now, and 'promote --scope session' narrows back.
 EOF
       ;;
     *)
@@ -642,19 +646,27 @@ caller_controller_id() {
   return 1
 }
 
-# Sessions the caller may act on, one per line. Empty output means server scope,
-# which passes every check. Written as a list so a later scope=A,B form that
-# links named workspaces is a parser change rather than a rewrite.
+# A controller's scope, one session per line. The field holds a comma list of
+# sessions. Two older values remain readable: 'session' means the controller's
+# own session, and 'server' (or an empty field) means every session, printed as
+# nothing, until the scope is rewritten with 'ego scope'.
+controller_scope_list() {
+  local meta=$1 scope
+  scope=$(meta_get "$meta" scope)
+  case "$scope" in
+    ''|server) return 0 ;;
+    session) meta_get "$meta" session ;;
+    *) printf '%s\n' "$scope" | tr ',' '\n' | grep . || true ;;
+  esac
+}
+
+# Sessions the caller may act on, one per line. Empty output means every
+# session, which passes every check: a human in a plain shell, or a controller
+# still holding the older 'server' value.
 scope_sessions() {
-  local id meta scope
+  local id
   if id=$(caller_controller_id); then
-    meta="$CONTROLLERS_DIR/$id/meta"
-    scope=$(meta_get "$meta" scope)
-    case "$scope" in
-      ''|server) return 0 ;;
-      session) meta_get "$meta" session ;;
-      *) printf '%s' "$scope" | tr ',' '\n' ;;
-    esac
+    controller_scope_list "$CONTROLLERS_DIR/$id/meta"
     return 0
   fi
   # A worker invokes ego too. Without this it would fall through to server scope
@@ -664,13 +676,15 @@ scope_sessions() {
   fi
 }
 
-# The single session a read should be narrowed to, or nothing for the whole
-# server. A multi-session scope has no single session to print, so it reads wide.
-scope_filter_session() {
-  local sessions
-  sessions=$(scope_sessions)
-  [ "$(printf '%s\n' "$sessions" | grep -c .)" -eq 1 ] || return 0
-  printf '%s\n' "$sessions"
+# Succeed when a session is in a newline-separated list. An empty list is every
+# session.
+in_session_list() {
+  [ -z "$2" ] || printf '%s\n' "$2" | grep -Fxq -- "$1"
+}
+
+# A newline list as "A, B" for messages.
+session_list_text() {
+  printf '%s\n' "$1" | grep . | paste -sd, - | sed 's/,/, /g'
 }
 
 # This is a coordination guard, not a security boundary: a caller that unsets
@@ -683,7 +697,7 @@ require_in_scope() {
   if printf '%s\n' "$sessions" | grep -Fxq -- "$session"; then
     return 0
   fi
-  die "session '$session' is outside this scope ($(printf '%s' "$sessions" | tr '\n' ',' | sed 's/,$//')); Sandro must name the other workspace before you add --any-session"
+  die "session '$session' is outside this scope ($(session_list_text "$sessions")); Sandro must name the other workspace before you add --any-session"
 }
 
 agent_id_in_session() {
@@ -1140,9 +1154,10 @@ cmd_controllers() {
   done
 }
 
+# The older name for 'ego scope'. With no --scope it widens to every session
+# live right now; --scope session narrows to the controller's own session.
 cmd_promote() {
-  ensure_home
-  local id= scope=server meta
+  local id= scope=server
   while [ $# -gt 0 ]; do
     case "$1" in
       --scope) [ $# -ge 2 ] || die "--scope requires a value"; scope=$2; shift 2 ;;
@@ -1150,18 +1165,7 @@ cmd_promote() {
       *) [ -z "$id" ] || die "promote accepts one controller id"; id=$1; shift ;;
     esac
   done
-  case "$scope" in session|server) ;; *) die "--scope must be session or server" ;; esac
-  if [ -z "$id" ]; then
-    id=$(caller_controller_id) \
-      || die "promote requires a controller id when the caller is not a controller"
-  fi
-  valid_id "$id" || die "invalid controller id '$id'"
-  meta=$(controller_meta "$id") || die "unknown controller '$id'; run 'ego controllers'"
-  meta_set "$meta" scope "$scope"
-  meta_set "$meta" updated_at "$(now)"
-  # Scope is read at call time, so the change needs no restart.
-  append_event controller "$id" "scope=$scope" "$(meta_get "$meta" session)"
-  printf 'controller %s now has %s scope\n' "$id" "$scope"
+  if [ -n "$id" ]; then cmd_scope "$id" "$scope"; else cmd_scope "$scope"; fi
 }
 
 # Decide whether one workspace record belongs in startup context: a workspace is
@@ -1170,7 +1174,7 @@ cmd_promote() {
 workspace_in_context() {
   local meta=$1 filter=$2
   [ "$(meta_get "$meta" live)" != no ] || return 1
-  [ -z "$filter" ] || [ "$(meta_get "$meta" session)" = "$filter" ] || return 1
+  in_session_list "$(meta_get "$meta" session)" "$filter" || return 1
   return 0
 }
 
@@ -1183,7 +1187,7 @@ print_workspace_table() {
     [ -f "$meta" ] || continue
     if [ "$active_only" = active ]; then
       workspace_in_context "$meta" "$filter" || continue
-    elif [ -n "$filter" ] && [ "$(meta_get "$meta" session)" != "$filter" ]; then
+    elif ! in_session_list "$(meta_get "$meta" session)" "$filter"; then
       continue
     fi
     live=$(meta_get "$meta" live)
@@ -1203,7 +1207,7 @@ print_agent_table() {
     active=$(meta_get "$meta" active)
     [ "$active_only" != active ] || [ "$active" != no ] || continue
     session=$(meta_get "$meta" session)
-    [ -z "$filter" ] || [ "$session" = "$filter" ] || continue
+    in_session_list "$session" "$filter" || continue
     id=$(meta_get "$meta" id)
     pane=$(meta_get "$meta" pane_id)
     owner=$(meta_get "$meta" owner)
@@ -1247,7 +1251,7 @@ print_stale_table() {
     meta="$dir/meta"
     [ -f "$meta" ] || continue
     [ "$(meta_get "$meta" active)" != no ] || continue
-    [ -z "$filter" ] || [ "$(meta_get "$meta" session)" = "$filter" ] || continue
+    in_session_list "$(meta_get "$meta" session)" "$filter" || continue
     reason=$(stale_reason "$meta")
     [ -n "$reason" ] || continue
     # Ego never closes a window itself; this is the command Sandro would run.
@@ -1296,12 +1300,14 @@ cmd_context() {
     scan_fleet 0 >/dev/null
   fi
   if [ "$chosen" -eq 0 ]; then
-    filter=$(scope_filter_session)
+    filter=$(scope_sessions)
   elif [ "$all" -eq 1 ]; then
     filter=
   fi
   printf '# Sandro\x27s Ego context\n\nGenerated: %s\n' "$(now)"
-  if [ -n "$filter" ]; then
+  if [ "$(printf '%s\n' "$filter" | grep -c .)" -gt 1 ]; then
+    printf 'Scope: sessions %s. Run `ego context --all` for every session on this server.\n\n' "$(session_list_text "$filter")"
+  elif [ -n "$filter" ]; then
     printf 'Scope: session %s. Run `ego context --all` for every session on this server.\n\n' "$filter"
   else
     printf 'Scope: every session on this tmux server.\n\n'
@@ -1327,7 +1333,7 @@ cmd_context() {
     [ -f "$meta" ] || continue
     active=$(meta_get "$meta" active)
     [ "$active" != no ] || continue
-    [ -z "$filter" ] || [ "$(meta_get "$meta" session)" = "$filter" ] || continue
+    in_session_list "$(meta_get "$meta" session)" "$filter" || continue
     id=$(meta_get "$meta" id)
     owner=$(meta_get "$meta" owner)
     reporting=$(meta_get "$meta" reporting)
@@ -1350,7 +1356,14 @@ cmd_context() {
     # The recovery view adds workspace records whose session is gone, their
     # latest checkpoint, and each agent's endpoint.
     printf '\n'
-    if [ -n "$filter" ]; then cmd_recover "$filter"; else cmd_recover; fi
+    if [ -z "$filter" ]; then
+      cmd_recover
+    else
+      local recover_session
+      while IFS= read -r recover_session; do
+        [ -z "$recover_session" ] || cmd_recover "$recover_session" 2>/dev/null || true
+      done <<< "$filter"
+    fi
   fi
 }
 
@@ -1826,8 +1839,11 @@ cmd_spawn() {
   fi
   [ -n "$session" ] || die "run spawn inside tmux or pass --session"
   # Checked before anything is created: spawn can otherwise open a window in
-  # another workspace, or create a whole new session under @workspace_primary.
-  require_in_scope "$session"
+  # another workspace. A controller may create a brand-new workspace, which then
+  # joins its own scope; a worker may not.
+  if tmux_cmd has-session -t "=$session" 2>/dev/null || ! caller_controller_id >/dev/null; then
+    require_in_scope "$session"
+  fi
   if ! tmux_cmd has-session -t "=$session" 2>/dev/null; then
     valid_id "$session" \
       || die "new session names must be directory-safe; use a name such as 'music-generation'"
@@ -1841,6 +1857,7 @@ cmd_spawn() {
     tmux_cmd new-session -d -s "$session" -c "$root"
     record_workspace "$session" "$root"
     append_event workspace-created "$session" "$root" "$session"
+    add_session_to_caller_scope "$session"
     created_session=1
   fi
   window=$name
@@ -2156,9 +2173,9 @@ cmd_watch() {
   done
   case "$timeout" in ''|*[!0-9]*) die "watch timeout must be an integer" ;; esac
   ensure_home
-  # Scope is the other axis from --all: a session-scoped controller wakes for
-  # every kind within its own session, never for another workspace.
-  session=$(scope_filter_session)
+  # Scope is the other axis from --all: a scoped controller wakes for every kind
+  # within its own sessions, never for another workspace.
+  session=$(scope_sessions | paste -sd, -)
   cursor_file=$(watch_cursor_file)
   mkdir -p "$(dirname "$cursor_file")"
   total=$(wc -l < "$EVENTS_FILE" | tr -d ' ')
@@ -2185,7 +2202,9 @@ cmd_watch() {
       # A line written before the session field existed has four fields, and a
       # fleet event leaves the field empty. Both match every scope.
       if [ -n "$session" ]; then
-        batch=$(printf '%s\n' "$batch" | awk -F '\t' -v s="$session" 'NF < 5 || $5 == "" || $5 == s')
+        batch=$(printf '%s\n' "$batch" | awk -F '\t' -v s="$session" '
+          BEGIN { n = split(s, list, ","); for (i = 1; i <= n; i++) keep[list[i]] = 1 }
+          NF < 5 || $5 == "" || ($5 in keep)')
       fi
       if [ -z "$batch" ]; then
         :
@@ -2206,20 +2225,82 @@ cmd_watch() {
   printf 'No actionable events within %s seconds.\n' "$timeout"
 }
 
-# A controller sitting in a project directory supervises that session by default.
-# One in a generic directory, such as a home directory or a workspace root
-# itself, has no single project and defaults to the whole server.
-derive_controller_scope() {
-  local dir=$1 base
-  for base in "$(workspace_option @workspace_primary)" "$(workspace_option @workspace_secondary)"; do
-    [ -n "$base" ] || continue
-    [ "${dir%/}" != "${base%/}" ] || { printf 'server\n'; return 0; }
-  done
-  if [ "$(workspace_kind "$dir")" = external ]; then
-    printf 'server\n'
-  else
-    printf 'session\n'
+# Turn a scope argument into a comma list of sessions. 'session' is the
+# controller's own session and 'server' is every session live right now; both
+# are older spellings, resolved once into an explicit list.
+normalize_scope() {
+  local value=$1 own=$2 item out=
+  case "$value" in
+    session) value=$own ;;
+    server) value=$(tmux_cmd list-sessions -F '#{session_name}' 2>/dev/null | paste -sd, -) ;;
+  esac
+  while IFS= read -r item; do
+    [ -n "$item" ] || continue
+    valid_id "$item" || die "invalid session name '$item' in scope"
+    case ",$out," in *",$item,"*) continue ;; esac
+    out=${out:+$out,}$item
+  done <<< "$(printf '%s\n' "$value" | tr ',' '\n')"
+  [ -n "$out" ] || die "a scope needs at least one session"
+  printf '%s\n' "$out"
+}
+
+# Show or change which sessions a controller covers. One argument edits the
+# calling controller: a list replaces its scope, +A adds and -A removes. Two
+# arguments name the controller first. Scope is read at call time, so the change
+# needs no restart.
+cmd_scope() {
+  ensure_home
+  local id= value= meta current own new item
+  case $# in
+    0) id=$(caller_controller_id) || die "scope needs a controller id when the caller is not a controller; see 'ego list --controllers'" ;;
+    1) value=$1
+       id=$(caller_controller_id) || die "scope needs a controller id when the caller is not a controller; see 'ego list --controllers'" ;;
+    2) id=$1; value=$2 ;;
+    *) die "usage: ego scope [<controller-id>] [<session,...>|+<session>|-<session>]" ;;
+  esac
+  valid_id "$id" || die "invalid controller id '$id'"
+  meta=$(controller_meta "$id") || die "unknown controller '$id'; see 'ego list --controllers'"
+  current=$(controller_scope_list "$meta")
+  own=$(meta_get "$meta" session)
+  if [ -z "$value" ]; then
+    if [ -n "$current" ]; then session_list_text "$current"; else printf 'every session\n'; fi
+    return 0
   fi
+  case "$value" in
+    +*)
+      [ -n "$current" ] || die "controller '$id' still covers every session; set an explicit list first"
+      new=$(normalize_scope "$(printf '%s\n' "$current" | paste -sd, -),${value#+}" "$own")
+      ;;
+    -*)
+      [ -n "$current" ] || die "controller '$id' still covers every session; set an explicit list first"
+      new=
+      while IFS= read -r item; do
+        case ",${value#-}," in *",$item,"*) continue ;; esac
+        new=${new:+$new,}$item
+      done <<< "$current"
+      new=$(normalize_scope "$new" "$own")
+      ;;
+    *) new=$(normalize_scope "$value" "$own") ;;
+  esac
+  meta_set "$meta" scope "$new"
+  meta_set "$meta" updated_at "$(now)"
+  append_event controller "$id" "scope=$new" "$own"
+  printf 'controller %s now covers %s\n' "$id" "$(printf '%s' "$new" | sed 's/,/, /g')"
+}
+
+# Add a session the calling controller just created to its own scope, so it
+# keeps reach over the workspace it made. A caller with no explicit list already
+# covers every session.
+add_session_to_caller_scope() {
+  local session=$1 id meta current
+  id=$(caller_controller_id) || return 0
+  meta="$CONTROLLERS_DIR/$id/meta"
+  current=$(controller_scope_list "$meta")
+  [ -n "$current" ] || return 0
+  ! in_session_list "$session" "$current" || return 0
+  meta_set "$meta" scope "$(normalize_scope "$(printf '%s\n' "$current" | paste -sd, -),$session" "$(meta_get "$meta" session)")"
+  meta_set "$meta" updated_at "$(now)"
+  append_event controller "$id" "scope+=$session" "$session"
 }
 
 cmd_start() {
@@ -2233,7 +2314,6 @@ cmd_start() {
       *) die "unknown start option '$1'" ;;
     esac
   done
-  case "$scope" in ''|session|server) ;; *) die "--scope must be session or server" ;; esac
   launchable_agent "$agent" || die "--agent must be codex, claude, or kiro"
   command -v "$(agent_executable "$agent")" >/dev/null 2>&1 || die "$(agent_executable "$agent") is not installed"
   require_tmux
@@ -2250,7 +2330,9 @@ cmd_start() {
   # fallback for a session whose root cannot be resolved.
   controller_dir=$(resolve_session_root "$session" 2>/dev/null || true)
   [ -n "$controller_dir" ] && [ -d "$controller_dir" ] || controller_dir="$EGO_HOME/controller"
-  [ -n "$scope" ] || scope=$(derive_controller_scope "$controller_dir")
+  # A controller covers its own session unless told otherwise. More sessions
+  # are added explicitly, with --scope here or 'ego scope' later.
+  scope=$(normalize_scope "${scope:-$session}" "$session")
   if inventory | awk -F '\t' -v s="$session" -v w="$window" '$1 == s && $2 == w { found=1 } END { exit !found }'; then
     die "tmux window $session:$window already exists"
   fi
@@ -2263,7 +2345,7 @@ cmd_start() {
   record_controller "$id" "$session" "$window" "$pane" "$controller_dir" "$scope"
   enforce_controller_panes >/dev/null
   launch="$CONTROLLERS_DIR/$id/launch.sh"
-  prompt="You are Sandro's Ego, controller $id. Read and follow $guide. Start by running $EGO_CLI_PATH session-start. Use $EGO_CLI_PATH for Ego commands."
+  prompt="You are Sandro's Ego, controller $id. Read and follow $guide. Start by running $EGO_CLI_PATH context. Use $EGO_CLI_PATH for Ego commands."
   {
     printf '#!/bin/zsh\n'
     printf 'export EGO_HOME=%s\n' "$(shell_quote "$EGO_HOME")"
@@ -2273,7 +2355,7 @@ cmd_start() {
   chmod 700 "$launch"
   tmux_cmd send-keys -t "$pane" "$(shell_quote "$launch")" Enter
   append_event controller "$id" "$session:$window scope=$scope" "$session"
-  printf 'started Ego %s at %s:%s with %s scope\n' "$id" "$session" "$window" "$scope"
+  printf 'started Ego %s at %s:%s covering %s\n' "$id" "$session" "$window" "$(printf '%s' "$scope" | sed 's/,/, /g')"
 }
 
 command_name=${1:-help}
@@ -2305,6 +2387,7 @@ case "$command_name" in
   scan) cmd_scan "$@" ;;
   list) cmd_list "$@" ;;
   controllers) cmd_controllers "$@" ;;
+  scope) cmd_scope "$@" ;;
   promote) cmd_promote "$@" ;;
   workspaces) cmd_list --workspaces "$@" ;;
   context|status|session-start) cmd_context "$@" ;;

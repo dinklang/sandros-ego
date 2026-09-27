@@ -18,19 +18,20 @@ One tmux server may contain many workspace sessions.
 Each session has its own session path and agent windows.
 Ego reads the entire server and records the exact session, window, window ID, and pane ID for each agent.
 
-A controller can be scoped to one workspace or to the whole server, and several
+A controller's scope is an explicit list of sessions, and several controllers
 can run at once.
 The controller window inherits its session's workspace root, so it matches every
-other window in that session. Starting the controller in a session whose root is
-generic keeps a server-wide controller out of any one project. The neutral
+other window in that session. The neutral
 `~/.ego/state/controller` directory remains the fallback for a session whose root
 cannot be resolved. Its runtime instructions come from the installed
 `~/.ego/CONTROLLER.md`; the repository `AGENTS.md` applies only while developing
 Ego.
 
-That location also sets a default scope. A controller in a project directory
-defaults to its own session; one in a generic directory, including a workspace
-root itself, defaults to the whole server. Scope bounds what a controller reads,
+A controller covers its own session by default. More sessions are listed
+explicitly, at start or with `ego scope`, and a controller that spawns into a
+brand-new session gets that session added, so it keeps reach over what it
+created. There is no implicit whole-server scope: a controller over several
+workspaces names them. Scope bounds what a controller reads,
 wakes for, and may touch. It does not bound what `ego scan` records: keeping the
 fleet record complete costs one tmux call and preserves cross-session handoff on
 request. Every context read names its scope so the controller knows it is seeing
@@ -41,8 +42,10 @@ Starting one therefore has no effect on one already running, and its launch
 script lives beside its record so a restart in place restores the same identity.
 The script exports `EGO_CONTROLLER_ID`, and each invocation resolves its own
 scope from that, from `$TMUX_PANE`, or from `EGO_AGENT_ID` when the caller is a
-worker. A human in a plain shell gets server scope. Because scope is data read at
-call time, `ego promote` changes it without a restart.
+worker. A human in a plain shell gets every session. Because scope is data read
+at call time, `ego scope` changes it without a restart. An older record holding
+`session` reads as its own session, and one holding `server` as every session,
+until it is rewritten.
 
 A pane is a controller or a worker, never both. `ego scan` excludes every live
 controller pane and retires any agent record that claims one, so a controller
@@ -50,17 +53,17 @@ from an earlier session is never adopted as a worker.
 
 Scope is a boundary as well as a filter. `require_in_scope` keys on a session, so
 one check covers both agent commands and workspace commands, and `spawn` cannot
-open a window or create a session in someone else's workspace. `--any-session` is
+open a window in someone else's workspace. `--any-session` is
 the deliberate override. This is a coordination guard, not a security boundary: a
 caller that unsets `EGO_AGENT_ID` escapes it, and keeping server scope for humans
 is intended.
 
-Events carry the session they belong to, so `ego watch` wakes a session-scoped
-controller only for its own workspace. An event with no session, such as a fleet
+Events carry the session they belong to, so `ego watch` wakes a controller only
+for the workspaces its scope lists. An event with no session, such as a fleet
 `scan`, reaches every controller. Each caller keeps its own cursor, so one
-controller consuming an event cannot hide it from another. Two server-scoped
-controllers still both wake for the same event, so one server-wide watch loop at
-a time remains the rule.
+controller consuming an event cannot hide it from another. Two controllers whose
+scopes list the same session still both wake for its events, so each session is
+covered by one controller at a time.
 
 Ownership and reporting are records, not messages. Nothing is pushed into a pane
 except an `ego send` inbox notice and an `ego press` keystroke, so a handoff or a

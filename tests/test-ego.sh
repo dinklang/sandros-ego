@@ -9,7 +9,7 @@ test "$(rg -c "printf 'exec codex --sandbox workspace-write --add-dir" "$ROOT/bi
 grep -q "printf 'exec kiro-cli chat" "$ROOT/bin/ego"
 # --add-dir is variadic in Claude Code and swallows a trailing prompt.
 grep -q "printf 'exec claude %s --add-dir %s" "$ROOT/bin/ego"
-grep -q 'EGO_CLI_PATH.*session-start' "$ROOT/bin/ego"
+grep -q 'Start by running $EGO_CLI_PATH context' "$ROOT/bin/ego"
 # The controller inherits its session's workspace root, with the neutral state
 # directory only as a fallback.
 grep -q 'controller_dir=$(resolve_session_root "$session"' "$ROOT/bin/ego"
@@ -293,9 +293,10 @@ grep -q "^exec kiro-cli chat 'You are Sandro'\\\\''s Ego" "$EGO_HOME/controllers
 grep -q "^cd '$TMP'$" "$EGO_HOME/controllers/alpha--ego-kiro/launch.sh"
 # The launch script restores this controller's own identity when re-run in place.
 grep -q "^export EGO_CONTROLLER_ID='alpha--ego-kiro'$" "$EGO_HOME/controllers/alpha--ego-kiro/launch.sh"
-grep -q '^scope=server$' "$EGO_HOME/controllers/alpha--ego-kiro/meta"
+# A controller covers its own session unless told otherwise.
+grep -q '^scope=alpha$' "$EGO_HOME/controllers/alpha--ego-kiro/meta"
 tmux -L "$SOCKET" display-message -p -t "=alpha:ego-kiro" '#{pane_current_path}' | grep -qx "$TMP"
-"$ROOT/bin/ego" controllers | grep 'alpha--ego-kiro' | grep -q $'server\tyes\tlive'
+"$ROOT/bin/ego" controllers | grep 'alpha--ego-kiro' | grep -q $'alpha\tyes\tlive'
 "$ROOT/bin/ego" context | grep -q "Sandro's Ego context"
 "$ROOT/bin/ego" session-start | grep -q "Sandro's Ego context"
 # A controller pane is a controller, never also a worker record: registering one
@@ -433,14 +434,14 @@ mkdir -p "$TMP/epsilon" "$TMP/zeta"
 tmux -L "$SOCKET" new-session -d -s epsilon -c "$TMP/epsilon" -n base
 tmux -L "$SOCKET" new-session -d -s zeta -c "$TMP/zeta" -n base
 PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" start --session epsilon --window ego \
-  | grep -q 'started Ego epsilon--ego .* with session scope'
-grep -q '^scope=session$' "$EGO_HOME/controllers/epsilon--ego/meta"
+  | grep -q 'started Ego epsilon--ego .* covering epsilon$'
+grep -q '^scope=epsilon$' "$EGO_HOME/controllers/epsilon--ego/meta"
 grep -q '^exec claude ' "$EGO_HOME/controllers/epsilon--ego/launch.sh"
 PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" start --session zeta --window ego >/dev/null
-grep -q '^scope=session$' "$EGO_HOME/controllers/zeta--ego/meta"
+grep -q '^scope=zeta$' "$EGO_HOME/controllers/zeta--ego/meta"
 # Starting the second controller left the first one alone.
 grep -q '^session=epsilon$' "$EGO_HOME/controllers/epsilon--ego/meta"
-grep -q '^scope=session$' "$EGO_HOME/controllers/epsilon--ego/meta"
+grep -q '^scope=epsilon$' "$EGO_HOME/controllers/epsilon--ego/meta"
 
 context_epsilon=$(EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" context)
 printf '%s\n' "$context_epsilon" | grep -q '^Scope: session epsilon\.'
@@ -463,10 +464,32 @@ EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" context --all | grep -q '^alpha'
 EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" context --session alpha | grep -q '^alpha'
 # A human in a plain shell has server scope.
 "$ROOT/bin/ego" context | grep -q '^Scope: every session'
-# A controller sitting in a workspace root itself has no single project.
-PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" start --session alpha --window ego-server >/dev/null
-grep -q '^scope=server$' "$EGO_HOME/controllers/alpha--ego-server/meta"
-EGO_CONTROLLER_ID=alpha--ego-server "$ROOT/bin/ego" context | grep -q '^Scope: every session'
+# A controller over several workspaces lists them explicitly.
+PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" start --session alpha --window ego-multi --scope alpha,zeta >/dev/null
+grep -q '^scope=alpha,zeta$' "$EGO_HOME/controllers/alpha--ego-multi/meta"
+context_multi=$(EGO_CONTROLLER_ID=alpha--ego-multi "$ROOT/bin/ego" context)
+printf '%s\n' "$context_multi" | grep -q '^Scope: sessions alpha, zeta\.'
+printf '%s\n' "$context_multi" | grep -q '^zeta'
+if printf '%s\n' "$context_multi" | grep -q '^epsilon'; then
+  printf 'a multi-session scope leaked a workspace it does not list\n' >&2
+  exit 1
+fi
+EGO_CONTROLLER_ID=alpha--ego-multi "$ROOT/bin/ego" scope | grep -qx 'alpha, zeta'
+EGO_CONTROLLER_ID=alpha--ego-multi "$ROOT/bin/ego" scope +epsilon | grep -q 'now covers alpha, zeta, epsilon$'
+EGO_CONTROLLER_ID=alpha--ego-multi "$ROOT/bin/ego" scope -zeta | grep -q 'now covers alpha, epsilon$'
+"$ROOT/bin/ego" scope alpha--ego-multi alpha,zeta >/dev/null
+grep -q '^scope=alpha,zeta$' "$EGO_HOME/controllers/alpha--ego-multi/meta"
+if EGO_CONTROLLER_ID=alpha--ego-multi "$ROOT/bin/ego" scope -alpha,zeta >/dev/null 2>&1; then
+  printf 'scope accepted an empty session list\n' >&2
+  exit 1
+fi
+# A controller that creates a new workspace keeps reach over it.
+EGO_CONTROLLER_ID=alpha--ego-multi "$ROOT/bin/ego" spawn made --session theta --command 'sleep 600' >/dev/null
+grep -q '^scope=alpha,zeta,theta$' "$EGO_HOME/controllers/alpha--ego-multi/meta"
+# A multi-session watch wakes for any listed session and no other.
+EGO_CONTROLLER_ID=alpha--ego-multi "$ROOT/bin/ego" watch 0 >/dev/null
+"$ROOT/bin/ego" report theta--made blocked "listed session is stuck" >/dev/null
+EGO_CONTROLLER_ID=alpha--ego-multi "$ROOT/bin/ego" watch 0 | grep -q 'listed session is stuck'
 
 # Scope is a boundary, not only a display filter.
 if EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" peek alpha--agent-one >/dev/null 2>&1; then
@@ -497,12 +520,13 @@ fi
 EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" report alpha--three note "self report is exempt" >/dev/null
 
 # Promotion is a field write, not a restart.
-EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" promote | grep -q 'now has server scope'
-grep -q '^scope=server$' "$EGO_HOME/controllers/epsilon--ego/meta"
-EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" context | grep -q '^Scope: every session'
+# promote is the older name: it lists every session live right now.
+EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" promote | grep -q 'now covers .*alpha'
+grep -q '^scope=.*alpha' "$EGO_HOME/controllers/epsilon--ego/meta"
+EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" context | grep -q '^Scope: sessions '
 EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" peek alpha--agent-one >/dev/null
 "$ROOT/bin/ego" promote epsilon--ego --scope session >/dev/null
-grep -q '^scope=session$' "$EGO_HOME/controllers/epsilon--ego/meta"
+grep -q '^scope=epsilon$' "$EGO_HOME/controllers/epsilon--ego/meta"
 
 # Events carry a session, so a session-scoped controller wakes only for its own.
 EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" watch 0 >/dev/null
@@ -534,9 +558,9 @@ grep -q '^scope=session$' "$TMP/legacy/state/controllers/alpha--legacy-ego/meta"
 grep -q "^pane_id=$legacy_pane\$" "$TMP/legacy/state/controllers/alpha--legacy-ego/meta"
 test -f "$TMP/legacy/state/controller.meta"
 # Migration runs once, so a later scope change is not reverted.
-EGO_HOME="$TMP/legacy/state" "$ROOT/bin/ego" promote alpha--legacy-ego >/dev/null
+EGO_HOME="$TMP/legacy/state" "$ROOT/bin/ego" scope alpha--legacy-ego alpha,zeta >/dev/null
 EGO_HOME="$TMP/legacy/state" "$ROOT/bin/ego" init >/dev/null
-grep -q '^scope=server$' "$TMP/legacy/state/controllers/alpha--legacy-ego/meta"
+grep -q '^scope=alpha,zeta$' "$TMP/legacy/state/controllers/alpha--legacy-ego/meta"
 
 # A pane id is unique only within one tmux server's lifetime. A restarted server
 # numbers its panes from %0 again, so an old record must be retired rather than

@@ -19,7 +19,7 @@ The prototype can:
 - Press a restricted set of keys for an explicitly authorized terminal prompt.
 - Start a dedicated Ego agent in a tmux window.
 - Run several controllers at once, each with its own record and scope.
-- Keep a session-scoped controller inside its own workspace.
+- Keep a controller inside the workspaces its scope lists.
 - Change a running controller's scope without restarting it.
 - Rebuild its view after a restart from tmux and files on disk.
 - Record a recovery checkpoint for each workspace session.
@@ -362,8 +362,8 @@ lands while the controller is busy is surfaced by the next watch call instead of
 being missed. The first watch of a session starts from the present and does not
 replay an old log.
 
-Every event records the session it belongs to, so a session-scoped controller
-wakes only for its own workspace. An event that names no session, such as a
+Every event records the session it belongs to, so a controller wakes only for
+the workspaces its scope lists. An event that names no session, such as a
 fleet-wide `scan`, reaches every controller.
 
 ## Clean up agents and workspaces
@@ -429,17 +429,13 @@ Claude Code runs the controller by default. Use `--agent kiro` or
 `--agent codex` for another one. Workers default to Kiro.
 
 The controller window inherits its session's workspace root, the same root every
-other window in that session uses. Start it in a workspace session to supervise
-that workspace from inside it, or in a session with a generic root to supervise
-the whole server from a neutral place.
+other window in that session uses.
 
-That choice also sets how much the controller sees and may touch. A controller in
-a project directory records `scope=session` and works in that session alone. A
-controller in a generic directory, such as a home directory or a workspace root
-itself, records `scope=server` and supervises the whole tmux server. Override it:
+A controller's scope is the list of sessions it sees and may touch. It covers its
+own session unless you list more:
 
 ```sh
-ego start --session ProfilerShi --scope server
+ego start --session ProfilerShi --scope ProfilerShi,LoadTestShi
 ```
 
 Starting a controller has no effect on any controller already running. Each one
@@ -454,9 +450,9 @@ ego context --all        # every session on this server
 ego context --session project-b
 ```
 
-Scope is also a limit, not only a display filter. A session-scoped controller is
-refused when it tries to peek, send, spawn, checkpoint, or hand off in another
-workspace. `--any-session` is the deliberate override, for a request from Sandro
+Scope is also a limit, not only a display filter. A controller is refused when
+it tries to peek, send, spawn, checkpoint, or hand off in a workspace its scope
+does not list. `--any-session` is the deliberate override, for a request from Sandro
 that names another workspace:
 
 ```sh
@@ -467,12 +463,17 @@ Scope is read at call time, so a running controller can change it without a
 restart:
 
 ```sh
-ego promote                        # this controller takes the whole server
-ego promote project-a--ego --scope session
+ego scope                          # the calling controller's sessions
+ego scope +project-b               # also cover project-b
+ego scope -project-b               # stop covering it
+ego scope project-a--ego project-a,project-b
 ```
 
-`ego start --scope server` is the normal way to get a server controller.
-Promotion is for linking one more workspace to a controller already at work.
+To let one controller take over another workspace, add the workspace to its
+scope and close the other workspace's controller; the next scan retires that
+record. To go back, `ego start` in that workspace again. A controller that
+spawns into a brand-new session gets that session added to its scope. `ego
+promote` remains as the older name.
 
 Ego can see registered agents in every session on the same tmux server.
 You do not need one Ego process per workspace.
@@ -506,14 +507,14 @@ A pane is a controller or a worker, never both. `ego scan` excludes every live
 controller pane from its agent list, and retires any agent record that claims a
 controller's pane. A controller whose pane is gone is retired by the next scan.
 
-Scope keeps controllers out of each other's way. A session-scoped controller
-reads only its own workspace, wakes only for events in that workspace, and is
-refused when it tries to act on another one. Give a controller `scope=server`
-when it should supervise several.
+Scope keeps controllers out of each other's way. A controller reads only the
+sessions its scope lists, wakes only for events in them, and is refused when it
+tries to act on another one. List several sessions when one controller should
+supervise several workspaces.
 
 Every `ego report` appends to one shared `state/events.log`, and `ego watch`
-filters it by the caller's scope. Two server-scoped controllers both watching
-will both wake on the same event, so run one server-wide watch loop at a time.
+filters it by the caller's scope. Two controllers whose scopes list the same
+session both wake on its events, so cover each session with one controller.
 
 ## Recovery
 
@@ -544,9 +545,8 @@ A replacement controller begins with `ego context`. That command scans tmux and 
 
 The checkpoint does not need a second model session.
 It survives even if tmux or Ego stops.
-A session-scoped controller per workspace and one server-scoped controller above
-them are both supported, and the per-workspace files keep recovery local and
-clear either way.
+One controller per workspace and one controller over several workspaces are both
+supported, and the per-workspace files keep recovery local and clear either way.
 
 ## Your tmux workspace roots
 
