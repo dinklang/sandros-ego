@@ -21,8 +21,8 @@ agents in it may be gone by the time you act. Re-read it rather than trusting a
 stale table.
 
 Scope is enforced, not only displayed. With session scope, `peek`, `send`,
-`press`, `spawn`, `handoff`, `takeback`, `onboard`, `register`, `forget`,
-`checkpoint`, `stow`, and the workspace commands refuse a session that is not
+`press`, `spawn`, `handoff`, `handback`, `onboard`, `register`, `retire`,
+`checkpoint`, `stow`, and every `session:` target refuse a session that is not
 yours. `--any-session` overrides the refusal. Use it only when Sandro has named
 the other workspace. A refusal is not a reason to add it: without that
 instruction, report the boundary instead of crossing it.
@@ -53,6 +53,14 @@ as its directory. Use directory-safe kebab-case names such as
 `music-generation`, never names containing spaces. Pass `--root` when the
 workspace belongs under the secondary root or another explicit location. Never
 create a workspace from the Ego state directory or the Ego source repository.
+
+Name workers `<topic>-<role>`: lowercase kebab-case, the topic abbreviated the
+way Sandro says it, and a one-word role. Asked for an availability zone analyzer
+and a speech-to-text researcher, spawn `az-analyzer` and `stt-research`, not
+`availability-zone-analysis` or an invented abbreviation. Common roles are
+`analyzer`, `research`, `review`, `docs`, and `worker`. When Sandro names the
+agent, use his name verbatim. `ego spawn` refuses names longer than 3 parts or
+24 characters.
 
 The `owner` field records who must supervise without another prompt. Do not
 autonomously steer a human-owned agent. You may inspect it, answer questions
@@ -90,8 +98,13 @@ terminal approval prompt. After inspecting a visible prompt with `peek`, use
 `press` only when Sandro has authorized that exact action or a clear class of
 in-scope actions. Never guess which key an interface expects.
 
-Use `ego onboard-workspace <session>` to enroll every active worker in one tmux
-workspace in reporting without changing ownership.
+Commands that name an agent accept its id, its window name in your own
+session, or `session:window`. `handoff`, `handback`, `onboard`, and `retire`
+also accept `session:` for every active agent in that workspace.
+
+Use `ego onboard <session>:` to enroll every active worker in one tmux
+workspace in reporting without changing ownership. `ego onboard <window>`
+registers a window Ego has not recorded yet.
 
 For an Ego-owned agent:
 
@@ -120,16 +133,16 @@ stow only facts that still exist solely in the conversation:
 ego stow <session> --summary '<current state>' --next '<next action>'
 ```
 
-After a restart, run `ego session-start`. Use `ego recover <session>` only when
-the compact context leaves a workspace unclear. When there is nothing to do,
-run `ego watch 300`. It wakes for handoffs, takebacks, decisions, blockers,
+After a restart, run `ego context`. Use `ego context --full --session <session>`
+only when the compact context leaves a workspace unclear. When there is nothing to do,
+run `ego watch 300`. It wakes for handoffs, handbacks, decisions, blockers,
 failures, and completion. Routine progress remains on disk until requested.
 
 Choose `ego spawn --worktree` when a worker may edit or commit independently.
 Keep the shared checkout for read-only work or deliberate collaboration. The
 agent creating the worker makes this choice from the task.
 
-Use `ego takeback-workspace <session>` when Sandro resumes supervision of every
+Use `ego handback <session>:` when Sandro resumes supervision of every
 active worker in one workspace. This changes ownership only and keeps reporting
 enabled.
 

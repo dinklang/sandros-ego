@@ -41,40 +41,46 @@ usage() {
 Sandro's Ego manages agent windows in an existing tmux server.
 
 Usage:
-  ego install
-  ego init
-  ego scan
+A target is an agent id, a window name in the current session, session:window,
+or session: for every agent in a workspace.
+
+Workers:
+  ego report <id> <working|idle|blocked|needs-decision|done|failed|note> <message...>
+  ego inbox <id>
+  ego ack <id> <message-id>
+
+Controllers:
+  ego context [--session <session>] [--all] [--full]
+  ego watch [seconds] [--all]
   ego list [active] [--session <session>] [--stale|--controllers|--workspaces]
-  ego context [--session <session>] [--all]
-  ego promote [<controller-id>] [--scope <session|server>]
-  ego retire <id|session:window|session:> | --stale [--session <session>]
-                         | --controller <id>
-  ego purge <id>
-  ego register <window|session:window> [--id <id>] [--root <path>]
-                         [--agent <type>]
+  ego peek <id> [lines]
+  ego send <id> <message...>
+  ego press <id> <enter|escape|y|n|p>
   ego spawn <name> [--session <session>] [--root <path>] [--id <id>]
                          [--brief <text>] [--agent <codex|claude|kiro>]
                          [--worktree] [--branch <name>]
                          [--command <shell-command>]
-  ego onboard <id>
-  ego onboard-workspace <session>
-  ego handoff <id|window> [--session <session>] --summary <text> [--next <text>]
+  ego onboard <target>          ego offboard <id|session:window>
+  ego handoff <target> --summary <text> [--next <text>]
+  ego handback <target>
   ego checkpoint <session> --summary <text> [--next <text>]
   ego stow <session> --summary <text> [--next <text>]
-  ego archive-workspace <session>
-  ego handoff-workspace <session> --summary <text> [--next <text>]
-  ego takeback-workspace <session>
-  ego recover [session]
-  ego takeback <id|window> [--session <session>]
-  ego peek <id> [lines]
-  ego send <id> <message...>
-  ego press <id> <enter|escape|y|n|p>
-  ego inbox <id>
-  ego ack <id> <message-id>
-  ego report <id> <working|idle|blocked|needs-decision|done|failed|note> <message...>
-  ego watch [seconds] [--all]
+  ego retire <target> | --stale [--session <session>] | --controller <id>
+
+Sandro:
+  ego install
   ego start [--session <session>] [--window <name>] [--agent <codex|claude|kiro>]
                          [--scope <session|server>]
+  ego promote [<controller-id>] [--scope <session|server>]
+  ego scan
+  ego register <window|session:window> [--id <id>] [--root <path>]
+                         [--agent <type>]
+  ego purge <id>
+
+Older names: takeback (handback), handoff-workspace, takeback-workspace, and
+onboard-workspace (the session: target), session-start and recover (context,
+context --full), forget, prune, and archive-workspace (retire, purge),
+controllers and workspaces (list), init.
 
 Environment:
   EGO_ROOT          Installation root. Default: ~/.ego
@@ -92,20 +98,37 @@ EOF
 
 command_usage() {
   case "$1" in
-    handoff)
+    handoff|handoff-workspace)
       cat <<'EOF'
-Usage: ego handoff <id|window> [--session <session>] --summary <text> [--next <text>]
+Usage: ego handoff <target> [--session <session>] --summary <text> [--next <text>]
 
-Give Ego continuing supervision responsibility for one worker. The command
-does not restart or steer the worker. --summary is required; --next is optional.
+Give Ego continuing supervision responsibility for one worker, or for every
+active worker in a workspace with a session: target. The command does not
+restart or steer the worker. --summary is required; --next is optional. The
+note also records each worker's live state: latest report, agent process,
+screen observation, pending inbox, and the last 20 pane lines.
 EOF
       ;;
-    takeback)
+    handback|takeback|takeback-workspace)
       cat <<'EOF'
-Usage: ego takeback <id|window> [--session <session>]
+Usage: ego handback <target> [--session <session>]
 
-Return supervision responsibility to Sandro. Reporting stays enabled. The
-command prints the worker's latest durable report when one exists.
+Return supervision responsibility to Sandro for one worker, or for every active
+worker in a workspace with a session: target. Reporting stays enabled. The
+command prints the worker's latest durable report when one exists. takeback is
+the older name.
+EOF
+      ;;
+    onboard|onboard-workspace|offboard)
+      cat <<'EOF'
+Usage: ego onboard <target>
+       ego offboard <id|session:window>
+
+onboard sends the reporting and inbox contract to an agent and sets
+reporting=on, registering the window first when Ego has no record of it. A
+session: target onboards every active agent in that workspace that does not
+report yet. offboard withdraws the contract and sets reporting=off. Neither
+changes ownership.
 EOF
       ;;
     spawn)
@@ -117,7 +140,8 @@ Usage: ego spawn <name> [--session <session>] [--root <path>] [--id <id>]
 Create a tracked worker window. Kiro is the default agent. --brief is
 optional. Inside tmux, --session is optional and defaults to the current
 session. A missing named session is created below @workspace_primary unless
---root is supplied.
+--root is supplied. Names are short <topic>-<role> kebab-case, such as
+az-analyzer or stt-research: at most 3 parts and 24 characters.
 EOF
       ;;
     report)
@@ -1257,19 +1281,20 @@ cmd_list() {
 
 cmd_context() {
   ensure_home
+  local filter= chosen=0 all=0 full=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --session) [ $# -ge 2 ] || die "--session requires a value"; filter=$2; chosen=1; shift 2 ;;
+      --all) all=1; chosen=1; shift ;;
+      --full) full=1; shift ;;
+      *) die "unknown context option '$1'" ;;
+    esac
+  done
   # Every read starts from a fresh join of tmux and the records, so a dead pane
   # never reaches context just because nobody ran 'ego scan'.
   if command -v tmux >/dev/null 2>&1 && tmux_cmd list-sessions >/dev/null 2>&1; then
     scan_fleet 0 >/dev/null
   fi
-  local filter= chosen=0 all=0
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --session) [ $# -ge 2 ] || die "--session requires a value"; filter=$2; chosen=1; shift 2 ;;
-      --all) all=1; chosen=1; shift ;;
-      *) die "unknown context option '$1'" ;;
-    esac
-  done
   if [ "$chosen" -eq 0 ]; then
     filter=$(scope_filter_session)
   elif [ "$all" -eq 1 ]; then
@@ -1321,6 +1346,12 @@ cmd_context() {
       tail -n 5 "$status"
     fi
   done
+  if [ "$full" -eq 1 ]; then
+    # The recovery view adds workspace records whose session is gone, their
+    # latest checkpoint, and each agent's endpoint.
+    printf '\n'
+    if [ -n "$filter" ]; then cmd_recover "$filter"; else cmd_recover; fi
+  fi
 }
 
 write_workspace_checkpoint() {
@@ -1637,6 +1668,17 @@ cmd_handoff() {
   done
   [ -n "$ref" ] || die "handoff requires an agent id or tmux window"
   [ -n "$summary" ] || die "handoff requires --summary"
+  case "$ref" in
+    *:)
+      [ -z "$session" ] || die "handoff of a whole workspace takes no --session"
+      if [ -n "$next" ]; then
+        cmd_handoff_workspace "${ref%:}" --summary "$summary" --next "$next"
+      else
+        cmd_handoff_workspace "${ref%:}" --summary "$summary"
+      fi
+      return
+      ;;
+  esac
   ensure_home
   # Check the named session before anything can register a window in it.
   [ -z "$session" ] || require_in_scope "$session"
@@ -1679,21 +1721,27 @@ cmd_takeback() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --session) [ $# -ge 2 ] || die "--session requires a value"; session=$2; shift 2 ;;
-      --*) die "unknown takeback option '$1'" ;;
-      *) [ -z "$ref" ] || die "takeback accepts one agent or window"; ref=$1; shift ;;
+      --*) die "unknown handback option '$1'" ;;
+      *) [ -z "$ref" ] || die "handback accepts one agent or window"; ref=$1; shift ;;
     esac
   done
-  [ -n "$ref" ] || die "takeback requires an agent id or tmux window"
+  [ -n "$ref" ] || die "handback requires an agent id, session:window, or session:"
+  case "$ref" in
+    *:)
+      [ -z "$session" ] || die "handback of a whole workspace takes no --session"
+      cmd_takeback_workspace "${ref%:}"
+      return
+      ;;
+  esac
   if [ -n "$session" ]; then
     id=$(agent_id_in_session "$session" "$ref") \
       || die "unknown agent or window '$ref' in session '$session'"
-  elif [ -f "$AGENTS_DIR/$ref/meta" ]; then
-    id=$ref
+  elif id=$(resolve_agent_ref "$ref"); then
+    :
   elif current=$(current_tmux_session); then
-    id=$(agent_id_in_session "$current" "$ref") \
-      || die "unknown agent or window '$ref' in current session '$current'"
+    die "unknown agent or window '$ref' in current session '$current'"
   else
-    die "unknown agent '$ref'; pass its full id or use --session"
+    die "unknown agent '$ref'; pass its full id or session:window"
   fi
   meta=$(agent_meta "$id")
   require_in_scope "$(meta_get "$meta" session)"
@@ -1730,6 +1778,16 @@ cmd_takeback_workspace() {
   printf 'returned workspace %s and %s registered agents to human control\n' "$wanted" "$count"
 }
 
+# A worker name is its tmux window name and the tail of its id. Short role names
+# such as az-analyzer read at a glance; invented long ones do not.
+valid_worker_name() {
+  local name=$1 parts
+  case "$name" in ''|-*|*-|*--*|*[!a-z0-9-]*) return 1 ;; esac
+  [ "${#name}" -le 24 ] || return 1
+  parts=$(printf '%s' "$name" | tr -cd '-' | wc -c | tr -d ' ')
+  [ "$parts" -le 2 ]
+}
+
 cmd_spawn() {
   [ $# -ge 1 ] || die "spawn requires a name"
   local name=$1 session= root= id= brief= command_text= agent=kiro agent_set=0 use_worktree=0 branch= window row pane launch prompt source_root repo_top worktree
@@ -1751,6 +1809,8 @@ cmd_spawn() {
   if [ -n "$command_text" ] && [ "$agent_set" -eq 0 ]; then
     agent=unknown
   fi
+  valid_worker_name "$name" \
+    || die "worker names are short <topic>-<role> kebab-case, such as az-analyzer or stt-research: lowercase letters, digits, and hyphens, at most 3 parts and 24 characters"
   case "$agent" in
     unknown) ;;
     *) launchable_agent "$agent" || die "--agent must be codex, claude, or kiro" ;;
@@ -1967,8 +2027,17 @@ cmd_ack() {
 }
 
 cmd_onboard() {
-  [ $# -eq 1 ] || die "onboard requires one agent id"
-  local id=$1 meta message message_id ego_cli
+  [ $# -eq 1 ] || die "onboard requires one agent, session:window, or session:"
+  local ref=$1 id meta message message_id ego_cli
+  case "$ref" in *:) cmd_onboard_workspace "${ref%:}"; return ;; esac
+  ensure_home
+  # Onboarding a window Ego has not recorded registers it first, so a window
+  # name works here the same way it does for handoff.
+  if ! id=$(resolve_agent_ref "$ref"); then
+    case "$ref" in *:*) require_in_scope "${ref%%:*}" ;; esac
+    id=$(register_target "$ref")
+    [ -n "$id" ] || die "no agent or tmux window matches '$ref'"
+  fi
   meta=$(agent_meta "$id")
   require_in_scope "$(meta_get "$meta" session)"
   ego_cli="EGO_HOME=$(shell_quote "$EGO_HOME") $(shell_quote "$EGO_CLI_PATH")"
@@ -1980,6 +2049,24 @@ cmd_onboard() {
   meta_set "$meta" updated_at "$(now)"
   append_event onboarded "$id" "message=$message_id" "$(meta_get "$meta" session)"
   printf 'onboarded %s with message %s\n' "$id" "$message_id"
+}
+
+# The inverse of onboard: the agent stops calling 'ego report'. Its record,
+# owner, and history stay; only the reporting contract is withdrawn.
+cmd_offboard() {
+  [ $# -eq 1 ] || die "offboard requires one agent id or session:window"
+  local ref=$1 id meta message message_id
+  id=$(resolve_agent_ref "$ref") || die "unknown agent '$ref'"
+  meta=$(agent_meta "$id")
+  require_in_scope "$(meta_get "$meta" session)"
+  message="Leave Ego's reporting protocol. Stop calling ego report and ego inbox for $id. Continue your current work as before."
+  message_id=$(queue_message "$id" "$message") \
+    || die "could not reach '$id'; its pane may be gone, so run 'ego scan'"
+  [ -n "$message_id" ] || die "could not reach '$id'; its pane may be gone, so run 'ego scan'"
+  meta_set "$meta" reporting off
+  meta_set "$meta" updated_at "$(now)"
+  append_event offboarded "$id" "message=$message_id" "$(meta_get "$meta" session)"
+  printf 'offboarded %s with message %s\n' "$id" "$message_id"
 }
 
 cmd_onboard_workspace() {
@@ -2250,7 +2337,8 @@ case "$command_name" in
   handoff-workspace) require_tmux; cmd_handoff_workspace "$@" ;;
   takeback-workspace) require_tmux; cmd_takeback_workspace "$@" ;;
   recover) cmd_recover "$@" ;;
-  takeback) cmd_takeback "$@" ;;
+  handback|takeback) cmd_takeback "$@" ;;
+  offboard) require_tmux; cmd_offboard "$@" ;;
   peek) require_tmux; cmd_peek "$@" ;;
   send) require_tmux; cmd_send "$@" ;;
   press) require_tmux; cmd_press "$@" ;;

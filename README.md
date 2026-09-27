@@ -216,7 +216,7 @@ ego onboard project-a-review
 Onboard every active agent in one workspace session with:
 
 ```sh
-ego onboard-workspace project-a
+ego onboard project-a:
 ```
 
 The command scans first, skips agents that already report, and leaves ownership unchanged. Agents whose panes are unavailable are reported and skipped.
@@ -244,10 +244,10 @@ sees a running process even when the summary does not mention it.
 Take control back with:
 
 ```sh
-ego takeback project-a--profile
+ego handback project-a--profile
 ```
 
-`takeback` prints the latest durable worker report. When the controller handles
+`handback` prints the latest durable worker report. When the controller handles
 the request, it also inspects the live pane and gives a short return brief. The
 brief is expected controller behavior, not a model-generated feature of the
 ownership change itself.
@@ -255,7 +255,7 @@ ownership change itself.
 Hand off a whole workspace with one recovery summary:
 
 ```sh
-ego handoff-workspace project-a \
+ego handoff project-a: \
   --summary "The profiler works. The optimizer is testing the hot loop." \
   --next "Collect both results and compare total runtime."
 ```
@@ -265,10 +265,11 @@ This marks every registered agent in that session as Ego-owned.
 Return every active agent in that workspace to human supervision with:
 
 ```sh
-ego takeback-workspace project-a
+ego handback project-a:
 ```
 
-Reporting stays enabled after takeback.
+Reporting stays enabled after handback. `takeback`, `handoff-workspace`,
+`takeback-workspace`, and `onboard-workspace` remain as older names.
 
 ## Spawn an agent
 
@@ -279,6 +280,9 @@ ego spawn profiler --agent codex --brief "Build the first profiling experiment."
 ```
 
 That creates a `profiler` window and starts Codex there. Ego records it as `origin=ego`, `owner=ego`, and `reporting=on`.
+
+Worker names are short `<topic>-<role>` kebab-case names such as `az-analyzer`
+or `stt-research`. `spawn` refuses names longer than 3 parts or 24 characters.
 
 From outside tmux, name the workspace session:
 
@@ -320,14 +324,14 @@ ownership changes:
 
 ```sh
 ego handoff planner --session music-generation --summary "Ready for supervision."
-ego takeback planner --session music-generation
+ego handback planner --session music-generation
 ```
 
 Inside any window in that tmux session, omit the session entirely:
 
 ```sh
 ego handoff planner --summary "Ready for supervision."
-ego takeback planner
+ego handback planner
 ```
 
 The main Ego controller runs in a separate session, so it uses the full agent ID
@@ -485,10 +489,10 @@ the same identity and scope. `ego start` refuses a window that already exists.
 List the controllers and their launch paths with:
 
 ```sh
-ego controllers
+ego list --controllers
 ```
 
-Ego may also start later. Use `ego scan` and `ego onboard`, or `ego onboard-workspace`, to add agents that already exist.
+Ego may also start later. Use `ego scan` and `ego onboard`, or `ego onboard <session>:`, to add agents that already exist.
 
 ## More than one controller
 
@@ -525,7 +529,7 @@ ego checkpoint AgentOrchestrator \
 Read the saved checkpoint and current agents later:
 
 ```sh
-ego recover AgentOrchestrator
+ego context --full --session AgentOrchestrator
 ```
 
 Before an intentional controller reset, Ego should store only conversation facts that are missing from durable records:
@@ -536,7 +540,7 @@ ego stow AgentOrchestrator \
   --next "Ask Sandro to choose the policy, then resume optimizer."
 ```
 
-A replacement controller begins with `ego session-start`. That command scans tmux and prints compact context. It includes no more than five recent status lines per tracked agent. Use `ego recover <session>` only when more workspace detail is needed.
+A replacement controller begins with `ego context`. That command scans tmux and prints compact context. It includes no more than five recent status lines per tracked agent. Use `ego context --full --session <session>` only when more workspace detail is needed.
 
 The checkpoint does not need a second model session.
 It survives even if tmux or Ego stops.

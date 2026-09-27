@@ -201,6 +201,34 @@ grep -q '^## Worker state at handoff$' "$EGO_HOME/agents/beta--agent-two/handoff
 grep -q '^delegate beta$' "$EGO_HOME/agents/beta--agent-two/handoff.md"
 "$ROOT/bin/ego" takeback-workspace beta >/dev/null
 grep -q '^owner=human$' "$EGO_HOME/agents/beta--agent-two/meta"
+# The session: target is the same operation through the paired verbs.
+"$ROOT/bin/ego" handoff beta: --summary "delegate beta again" | grep -q '^handed workspace beta and 1 registered agents to Ego$'
+grep -q '^owner=ego$' "$EGO_HOME/agents/beta--agent-two/meta"
+"$ROOT/bin/ego" handback beta: | grep -q '^returned workspace beta and 1 registered agents to human control$'
+grep -q '^owner=human$' "$EGO_HOME/agents/beta--agent-two/meta"
+"$ROOT/bin/ego" handoff beta:agent-two --summary "one agent by session:window" >/dev/null
+grep -q '^owner=ego$' "$EGO_HOME/agents/beta--agent-two/meta"
+"$ROOT/bin/ego" handback beta:agent-two | grep -q '^returned beta--agent-two to human control$'
+grep -q '^owner=human$' "$EGO_HOME/agents/beta--agent-two/meta"
+
+# onboard registers a window Ego has no record of, and offboard reverses it.
+tmux -L "$SOCKET" new-window -d -t beta: -n late -c "$TMP"
+"$ROOT/bin/ego" onboard beta:late | grep -q '^onboarded beta--late with message '
+grep -q '^reporting=on$' "$EGO_HOME/agents/beta--late/meta"
+"$ROOT/bin/ego" offboard beta:late | grep -q '^offboarded beta--late with message '
+grep -q '^reporting=off$' "$EGO_HOME/agents/beta--late/meta"
+tmux -L "$SOCKET" kill-window -t beta:late
+
+# Worker names stay short role names.
+for bad_name in availability-zone-analysis-worker AZ-analyzer az_analyzer a-very-long-worker-name-x; do
+  if "$ROOT/bin/ego" spawn "$bad_name" --session alpha --root "$TMP" --command 'sleep 5' >/dev/null 2>&1; then
+    printf 'spawn accepted the worker name %s\n' "$bad_name" >&2
+    exit 1
+  fi
+done
+"$ROOT/bin/ego" spawn --help | grep -q 'az-analyzer or stt-research'
+
+"$ROOT/bin/ego" context --full | grep -q '^# Recovery view$'
 
 "$ROOT/bin/ego" spawn three --session alpha --root "$TMP" --command 'sleep 5' --brief "test worker" >/dev/null
 test -f "$EGO_HOME/agents/alpha--three/meta"
