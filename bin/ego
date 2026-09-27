@@ -701,6 +701,50 @@ scope_sessions() {
   fi
 }
 
+# Who is calling: a controller (its exported id or its pane matches a record), a
+# worker (EGO_AGENT_ID, exported by every worker launch script), or Sandro in a
+# plain shell. The order matches scope_sessions.
+caller_role() {
+  if caller_controller_id >/dev/null; then
+    printf 'controller\n'
+  elif [ -n "${EGO_AGENT_ID:-}" ]; then
+    printf 'worker\n'
+  else
+    printf 'human\n'
+  fi
+}
+
+role_allows() {
+  local role=$1 command=$2
+  case "$role" in
+    human) return 0 ;;
+    controller)
+      case "$command" in install|start) return 1 ;; *) return 0 ;; esac
+      ;;
+    worker)
+      case "$command" in
+        report|inbox|ack|context|status|session-start|list|peek) return 0 ;;
+        *) return 1 ;;
+      esac
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# The agent id a worker command acts on. A worker may omit its own id and may
+# not name anyone else's; controllers and Sandro must name the agent.
+self_or_named_agent() {
+  local named=${1:-}
+  if [ -n "${EGO_AGENT_ID:-}" ] && ! caller_controller_id >/dev/null; then
+    [ -z "$named" ] || [ "$named" = "$EGO_AGENT_ID" ] \
+      || die "a worker acts only on itself ($EGO_AGENT_ID), not '$named'"
+    printf '%s\n' "$EGO_AGENT_ID"
+    return 0
+  fi
+  [ -n "$named" ] || die "name the agent id"
+  printf '%s\n' "$named"
+}
+
 # Succeed when a session is in a newline-separated list. An empty list is every
 # session.
 in_session_list() {
@@ -1300,6 +1344,13 @@ cmd_list() {
       *) die "unknown list option '$1'" ;;
     esac
   done
+  # A worker lists agents in its own workspace only.
+  if [ "$(caller_role)" = worker ]; then
+    case "$what" in agents|stale) ;; *) die "a worker lists only agents in its own workspace" ;; esac
+    [ -z "$filter" ] || in_session_list "$filter" "$(scope_sessions)" \
+      || die "a worker lists only its own workspace"
+    filter=$(scope_sessions)
+  fi
   case "$what" in
     agents) print_agent_table "$active_only" "$filter" ;;
     stale) print_stale_table "$filter" ;;
@@ -1319,6 +1370,12 @@ cmd_context() {
       *) die "unknown context option '$1'" ;;
     esac
   done
+  # A worker reads its own workspace only.
+  if [ "$(caller_role)" = worker ]; then
+    [ "$all" -eq 0 ] || die "--all is not available to a worker"
+    [ -z "$filter" ] || in_session_list "$filter" "$(scope_sessions)" \
+      || die "a worker reads only its own workspace"
+  fi
   warn_if_drifted
   # Every read starts from a fresh join of tmux and the records, so a dead pane
   # never reaches context just because nobody ran 'ego scan'.
@@ -2043,9 +2100,10 @@ cmd_press() {
 }
 
 cmd_inbox() {
-  [ $# -eq 1 ] || die "inbox requires one agent id"
-  local meta dir file found=0 message_id
-  meta=$(agent_meta "$1")
+  [ $# -le 1 ] || die "inbox takes at most one agent id"
+  local id meta dir file found=0 message_id
+  id=$(self_or_named_agent "${1:-}") || exit 1
+  meta=$(agent_meta "$id")
   dir=${meta%/meta}
   for file in "$dir/inbox"/*.msg; do
     [ -f "$file" ] || continue
@@ -2058,16 +2116,21 @@ cmd_inbox() {
 }
 
 cmd_ack() {
-  [ $# -eq 2 ] || die "ack requires an agent id and message id"
-  local meta dir message_id=$2
+  local id meta dir message_id named=
+  case $# in
+    1) message_id=$1 ;;
+    2) named=$1; message_id=$2 ;;
+    *) die "ack requires a message id, after the agent id unless a worker is acknowledging its own" ;;
+  esac
   case "$message_id" in ''|.*|*/*|*[!A-Za-z0-9._-]*) die "invalid message id '$message_id'" ;; esac
-  meta=$(agent_meta "$1")
+  id=$(self_or_named_agent "$named") || exit 1
+  meta=$(agent_meta "$id")
   dir=${meta%/meta}
   [ -f "$dir/inbox/$message_id.msg" ] || die "pending message '$message_id' does not exist"
   mkdir -p "$dir/inbox/handled"
   mv "$dir/inbox/$message_id.msg" "$dir/inbox/handled/$message_id.msg"
-  append_event acknowledged "$1" "$message_id" "$(agent_session "$1")"
-  printf 'acknowledged %s for %s\n' "$message_id" "$1"
+  append_event acknowledged "$id" "$message_id" "$(agent_session "$id")"
+  printf 'acknowledged %s for %s\n' "$message_id" "$id"
 }
 
 cmd_onboard() {
@@ -2158,10 +2221,27 @@ cmd_onboard_workspace() {
     "$onboarded" "$wanted" "$already" "$unavailable"
 }
 
+report_state_word() {
+  case "$1" in
+    working|idle|blocked|needs-decision|done|failed|note|investigating|validating|waiting|complete|completed|error) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 cmd_report() {
-  [ $# -ge 3 ] || die "report requires an id, state, and message"
-  local id=$1 state=$2 meta dir message
-  shift 2
+  [ $# -ge 2 ] || die "report requires a state and message, after the agent id unless a worker reports on itself"
+  local id named= state meta dir message
+  # A worker may start with the state and leave its own id implied.
+  if [ -n "${EGO_AGENT_ID:-}" ] && report_state_word "$1" && [ ! -f "$AGENTS_DIR/$1/meta" ]; then
+    :
+  else
+    named=$1
+    shift
+  fi
+  id=$(self_or_named_agent "$named") || exit 1
+  [ $# -ge 2 ] || die "report requires a state and a message"
+  state=$1
+  shift
   message=$*
   case "$state" in
     investigating|validating) state=working ;;
@@ -2309,6 +2389,14 @@ cmd_scope() {
       ;;
     *) new=$(normalize_scope "$value" "$own") ;;
   esac
+  # A controller may narrow its own reach but not widen it: adding a workspace
+  # is Sandro's decision, made from his own shell.
+  if [ "$(caller_role)" = controller ] && [ -n "$current" ]; then
+    while IFS= read -r item; do
+      in_session_list "$item" "$current" \
+        || die "a controller cannot add '$item' to a scope; Sandro runs 'ego scope $id +$item' from his own shell"
+    done <<< "$(printf '%s\n' "$new" | tr ',' '\n')"
+  fi
   meta_set "$meta" scope "$new"
   meta_set "$meta" updated_at "$(now)"
   append_event controller "$id" "scope=$new" "$own"
@@ -2406,6 +2494,23 @@ if [ $# -gt 0 ]; then
   done
   set -- ${ego_args[@]+"${ego_args[@]}"}
 fi
+# Which role may run which command, in one place. Workers report on themselves,
+# read their own inbox, and look at their own workspace; supervision commands
+# belong to controllers and Sandro. A controller cannot start another controller
+# or install Ego, and 'scope' itself refuses to widen a controller's own scope.
+# Like scope, this prevents accidents; it is not a security boundary.
+case "$command_name" in
+  help|-h|--help) ;;
+  *)
+    ego_role=$(caller_role)
+    if ! role_allows "$ego_role" "$command_name"; then
+      die "'ego $command_name' is not available to a $ego_role; ask Sandro or your controller"
+    fi
+    if [ "$ego_role" = worker ] && [ "$EGO_ANY_SESSION" -eq 1 ]; then
+      die "--any-session is not available to a worker"
+    fi
+    ;;
+esac
 case "$command_name" in
   help)
     if [ $# -gt 0 ]; then command_usage "$1"; else usage; fi

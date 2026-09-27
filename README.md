@@ -346,7 +346,7 @@ ego spawn optimizer --session project-b --worktree \
   --brief "Optimize the hot loop and validate the result."
 ```
 
-Ego creates branch `ego/<agent-id>` and records the worktree path. Pass `--branch <name>` to choose another branch. Shared checkout remains the default. The controller or worker that creates the next agent decides which mode fits the task.
+Ego creates branch `ego/<agent-id>` and records the worktree path. Pass `--branch <name>` to choose another branch. Shared checkout remains the default. The controller that creates the next agent decides which mode fits the task.
 
 ## Communication
 
@@ -358,6 +358,14 @@ Instructions and reports use separate paths.
 - `ego report` appends a material worker update to its status log.
 
 Reporting stays active during attended work. Handoff changes who must react and continue supervision. It does not turn reporting on.
+
+Ego checks who is calling. A worker, identified by the `EGO_AGENT_ID` its launch
+script exports, may only report, read and acknowledge its own inbox, and look at
+its own workspace; it can leave out its own id, as in `ego report done
+"tests pass"`, and may not name another agent's. Supervision commands such as
+`handoff`, `press`, `retire`, `spawn`, and `watch` refuse a worker. A controller
+cannot start another controller or add a workspace to its own scope. Commands
+you run from a plain shell are never refused for role.
 
 `ego watch` keeps a cursor per caller under `state/watch/`, so a report that
 lands while the controller is busy is surfaced by the next watch call instead of

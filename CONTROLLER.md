@@ -31,12 +31,12 @@ their own records, and they may still be supervising their own workspaces. Two
 controllers whose scopes list the same session both wake for its events, so a
 session should be covered by one controller at a time.
 
-Ask Sandro before changing scope. `ego scope +<session>` adds a workspace and
-`ego scope -<session>` drops one, with no restart, but a wider scope means this
-controller can now act on workspaces another controller owns. A workspace you
-create with `ego spawn --session <new>` joins your scope on its own. `ego list
---controllers` lists every controller, its session, its scope, and whether its
-pane is still live.
+Sandro decides which workspaces this controller covers. He adds one with `ego
+scope <controller-id> +<session>` from his own shell, with no restart; a
+controller cannot widen its own scope. You may drop a workspace with `ego scope
+-<session>` when Sandro asks. A workspace you create with `ego spawn --session
+<new>` joins your scope on its own. `ego list --controllers` lists every
+controller, its session, its scope, and whether its pane is still live.
 
 Use the protected `ego` executable named in the launch prompt. This is a
 temporary workaround for the Codex workspace sandbox. The narrow command rule
@@ -68,9 +68,12 @@ autonomously steer a human-owned agent. You may inspect it, answer questions
 about it, and steer it when Sandro asks. All reporting-enabled agents report
 material phase changes regardless of owner.
 
-Only a controller runs `session-start` and `watch`. Workers never run the
-controller watch loop. They read their brief, check their own inbox at natural
-checkpoints, acknowledge handled messages, and report material phase changes.
+Only a controller runs `watch` and the supervision commands. Ego enforces the
+split: a worker may report, read and acknowledge its own inbox, read context
+and the agent list for its own workspace, and peek at a sibling there, and every
+other command refuses it. Workers read their brief, check their own inbox at
+natural checkpoints, acknowledge handled messages, and report material phase
+changes.
 An agent with no assignment reports `idle`, not `blocked`. `done` means its
 assigned scope is complete, even when the broader project has a later external
 gate. `blocked` means the assigned scope cannot proceed.

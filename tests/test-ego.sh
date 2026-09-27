@@ -39,7 +39,7 @@ if grep -q 'new-window.*-c "$REPO_ROOT"' "$ROOT/bin/ego"; then
   printf 'controller still starts in the source repository\n' >&2
   exit 1
 fi
-grep -q 'Only a controller runs `session-start` and `watch`' "$ROOT/CONTROLLER.md"
+grep -q 'Only a controller runs `watch` and the supervision commands' "$ROOT/CONTROLLER.md"
 if grep -q 'ego watch' "$ROOT/AGENTS.md"; then
   printf 'development AGENTS.md contains controller watch instructions\n' >&2
   exit 1
@@ -494,7 +494,12 @@ if printf '%s\n' "$context_multi" | grep -q '^epsilon'; then
   exit 1
 fi
 EGO_CONTROLLER_ID=alpha--ego-multi "$ROOT/bin/ego" scope | grep -qx 'alpha, zeta'
-EGO_CONTROLLER_ID=alpha--ego-multi "$ROOT/bin/ego" scope +epsilon | grep -q 'now covers alpha, zeta, epsilon$'
+# Adding a workspace is Sandro's decision, never the controller's own.
+if EGO_CONTROLLER_ID=alpha--ego-multi "$ROOT/bin/ego" scope +epsilon >/dev/null 2>&1; then
+  printf 'a controller widened its own scope\n' >&2
+  exit 1
+fi
+"$ROOT/bin/ego" scope alpha--ego-multi +epsilon | grep -q 'now covers alpha, zeta, epsilon$'
 EGO_CONTROLLER_ID=alpha--ego-multi "$ROOT/bin/ego" scope -zeta | grep -q 'now covers alpha, epsilon$'
 "$ROOT/bin/ego" scope alpha--ego-multi alpha,zeta >/dev/null
 grep -q '^scope=alpha,zeta$' "$EGO_HOME/controllers/alpha--ego-multi/meta"
@@ -537,10 +542,57 @@ if EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" send beta--agent-two hello >/dev/nu
   exit 1
 fi
 EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" report alpha--three note "self report is exempt" >/dev/null
+# A worker reports, reads, and acknowledges only for itself, and its own id is
+# implied.
+EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" report note "implied id" | grep -q '^recorded note for alpha--three$'
+grep -q $'\tnote\timplied id$' "$EGO_HOME/agents/alpha--three/status.log"
+if EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" report alpha--agent-one done "impersonated" >/dev/null 2>&1; then
+  printf 'a worker reported under another agent id\n' >&2
+  exit 1
+fi
+if grep -q 'impersonated' "$EGO_HOME/events.log"; then
+  printf 'a refused report still reached the event log\n' >&2
+  exit 1
+fi
+EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" inbox | grep -q '^No pending messages\.$'
+if EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" inbox alpha--agent-one >/dev/null 2>&1; then
+  printf 'a worker read another agent inbox\n' >&2
+  exit 1
+fi
+# Supervision commands belong to controllers and Sandro.
+for worker_command in "handoff alpha--agent-one --summary x" "handback alpha--agent-one" \
+  "press alpha--agent-one enter" "watch 0" "scope" "retire alpha--agent-one" \
+  "spawn helper --command true" "start"; do
+  # shellcheck disable=SC2086
+  if EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" $worker_command >/dev/null 2>&1; then
+    printf 'a worker ran ego %s\n' "$worker_command" >&2
+    exit 1
+  fi
+done
+EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" handoff alpha--agent-one --summary x 2>&1 \
+  | grep -q "'ego handoff' is not available to a worker"
+if EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" context --all >/dev/null 2>&1; then
+  printf 'a worker read every workspace\n' >&2
+  exit 1
+fi
+EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" context | grep -q '^Scope: session alpha\.'
+if EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" peek alpha--agent-one --any-session >/dev/null 2>&1; then
+  printf 'a worker used --any-session\n' >&2
+  exit 1
+fi
+# A controller cannot start another controller.
+if EGO_CONTROLLER_ID=epsilon--ego PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" start --session epsilon --window ego2 >/dev/null 2>&1; then
+  printf 'a controller started another controller\n' >&2
+  exit 1
+fi
 
 # Promotion is a field write, not a restart.
 # promote is the older name: it lists every session live right now.
-EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" promote | grep -q 'now covers .*alpha'
+if EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" promote >/dev/null 2>&1; then
+  printf 'a controller promoted itself\n' >&2
+  exit 1
+fi
+"$ROOT/bin/ego" promote epsilon--ego | grep -q 'now covers .*alpha'
 grep -q '^scope=.*alpha' "$EGO_HOME/controllers/epsilon--ego/meta"
 EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" context | grep -q '^Scope: sessions '
 EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" peek alpha--agent-one >/dev/null

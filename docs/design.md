@@ -58,6 +58,17 @@ the deliberate override. This is a coordination guard, not a security boundary: 
 caller that unsets `EGO_AGENT_ID` escapes it, and keeping server scope for humans
 is intended.
 
+Roles bound commands the way scope bounds sessions. Each invocation is a
+controller, a worker, or Sandro, resolved in the same order as scope, and one
+table in the dispatcher lists what each may run. A worker reports, reads and
+acknowledges only its own inbox, with its id implied, and reads context, the
+agent list, and sibling panes in its own workspace; it cannot hand off, press
+keys, retire, spawn, watch, or use `--any-session`. A controller runs every
+command within its scope but cannot start another controller or widen its own
+scope, so adding a workspace to a controller is Sandro's call from his own
+shell. Sandro runs everything. Enforcement lives in Ego rather than in each
+agent tool's permission profile, so it is the same for Claude, Codex, and Kiro.
+
 Events carry the session they belong to, so `ego watch` wakes a controller only
 for the workspaces its scope lists. An event with no session, such as a fleet
 `scan`, reaches every controller. Each caller keeps its own cursor, so one
