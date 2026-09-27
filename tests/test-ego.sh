@@ -473,4 +473,65 @@ EGO_HOME="$TMP/legacy/state" "$ROOT/bin/ego" promote alpha--legacy-ego >/dev/nul
 EGO_HOME="$TMP/legacy/state" "$ROOT/bin/ego" init >/dev/null
 grep -q '^scope=server$' "$TMP/legacy/state/controllers/alpha--legacy-ego/meta"
 
+# A pane id is unique only within one tmux server's lifetime. A restarted server
+# numbers its panes from %0 again, so an old record must be retired rather than
+# refreshed onto whatever new pane took its id, and a caller in that new pane
+# must not inherit an old controller's scope.
+# kill-server returns before the server is gone, and a new-session in that
+# window fails with "server exited unexpectedly".
+restart_server() {
+  local tries=0
+  tmux -L "$SOCKET" kill-server 2>/dev/null || true
+  while [ "$tries" -lt 50 ]; do
+    sleep 0.2
+    tmux -L "$SOCKET" new-session -d -s "$1" -c "$TMP" -n "$2" 2>/dev/null && return 0
+    tries=$((tries + 1))
+  done
+  printf 'could not restart the test tmux server\n' >&2
+  exit 1
+}
+export EGO_HOME="$TMP/restart/state"
+restart_server old agent-old
+tmux -L "$SOCKET" set-option -g @workspace_primary "$TMP"
+tmux -L "$SOCKET" new-window -d -t old: -n agent-legacy -c "$TMP"
+"$ROOT/bin/ego" scan >/dev/null
+old_pane=$(tmux -L "$SOCKET" list-panes -t old:agent-old -F '#{pane_id}')
+grep -q '^server_started=[0-9]' "$EGO_HOME/agents/old--agent-old/meta"
+# A record written before the server stamp existed is judged by its age.
+sed -i '/^server_started=/d' "$EGO_HOME/agents/old--agent-legacy/meta"
+PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" start --session old --window ego --scope session >/dev/null
+controller_pane=$(tmux -L "$SOCKET" list-panes -t old:ego -F '#{pane_id}')
+socket_path=$(tmux -L "$SOCKET" display-message -p '#{socket_path}')
+TMUX="$socket_path,1,0" TMUX_PANE="$controller_pane" "$ROOT/bin/ego" context | grep -q '^Scope: session old\.'
+# The start time has one-second resolution.
+sleep 1
+restart_server new agent-new
+tmux -L "$SOCKET" set-option -g @workspace_primary "$TMP"
+tmux -L "$SOCKET" new-window -d -t new: -n agent-new2 -c "$TMP"
+tmux -L "$SOCKET" new-window -d -t new: -n plain -c "$TMP"
+test "$(tmux -L "$SOCKET" list-panes -t new:agent-new -F '#{pane_id}')" = "$old_pane"
+"$ROOT/bin/ego" controllers | grep 'old--ego' | grep -q $'yes\tmissing'
+if "$ROOT/bin/ego" peek old--agent-old >/dev/null 2>&1; then
+  printf 'peek reached a pane that only shares an id with the recorded one\n' >&2
+  exit 1
+fi
+"$ROOT/bin/ego" scan >/dev/null
+grep -q '^active=no$' "$EGO_HOME/agents/old--agent-old/meta"
+grep -q '^session=old$' "$EGO_HOME/agents/old--agent-old/meta"
+grep -q '^active=no$' "$EGO_HOME/agents/old--agent-legacy/meta"
+grep -q '^session=old$' "$EGO_HOME/agents/old--agent-legacy/meta"
+grep -q '^session=new$' "$EGO_HOME/agents/new--agent-new/meta"
+grep -q '^active=yes$' "$EGO_HOME/agents/new--agent-new/meta"
+grep -q '^session=new$' "$EGO_HOME/agents/new--agent-new2/meta"
+grep -q '^active=no$' "$EGO_HOME/controllers/old--ego/meta"
+test "$(tmux -L "$SOCKET" list-panes -t new:plain -F '#{pane_id}')" = "$controller_pane"
+TMUX="$socket_path,1,0" TMUX_PANE="$controller_pane" "$ROOT/bin/ego" context | grep -q '^Scope: every session'
+# An id already taken by an older record is never overwritten by a new pane.
+tmux -L "$SOCKET" new-window -d -t new: -n agent-new3 -c "$TMP"
+new3_index=$(tmux -L "$SOCKET" display-message -p -t new:agent-new3 '#{pane_index}')
+mkdir -p "$EGO_HOME/agents/new--agent-new3" "$EGO_HOME/agents/new--agent-new3--p$new3_index"
+"$ROOT/bin/ego" scan >/dev/null
+grep -q '^window=agent-new3$' "$EGO_HOME/agents/new--agent-new3--p$new3_index-2/meta"
+test ! -f "$EGO_HOME/agents/new--agent-new3/meta"
+
 printf 'ok\n'

@@ -92,10 +92,17 @@ Before an intentional controller reset, `ego stow` records only the volatile wor
 
 ## Retirement
 
-A record can outlive what it describes. A tmux pane id is never reused, so a
-recorded pane that is absent from the inventory is permanently gone, and `ego
-scan` retires that agent. The same rule retires a controller record whose pane is
-gone, which also removes that controller's event cursor. Workspace records are
+A record can outlive what it describes. A tmux pane id is never reused while one
+server runs, so a recorded pane that is absent from the inventory is permanently
+gone, and `ego scan` retires that agent. A restarted server numbers its panes
+from `%0` again, so the same id can later name an unrelated pane. Every record
+therefore stores the server's start time, and a pane matches a record only when
+that start time matches too. A record from an earlier server is retired, never
+refreshed onto the new pane, and a caller in that pane never inherits an old
+controller's scope. A record written before the stamp existed is trusted only
+when it was created after the running server started. The same rule retires a
+controller record whose pane is gone, which also removes that controller's event
+cursor. Workspace records are
 written only from live sessions, so a record for a session that no longer exists
 would otherwise never be revisited; `scan` marks it `live=no`, and `ego prune`
 archives it once its directory is also gone. A killed session whose directory

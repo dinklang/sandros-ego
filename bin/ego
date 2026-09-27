@@ -297,6 +297,45 @@ append_event() {
   printf '%s\t%s\t%s\t%s\t%s\n' "$(now)" "$kind" "$id" "$(one_line "$detail")" "$(one_line "$session")" >> "$EVENTS_FILE"
 }
 
+epoch_to_iso() {
+  date -u -d "@$1" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -r "$1" '+%Y-%m-%dT%H:%M:%SZ'
+}
+
+# A pane id is unique only within one tmux server's lifetime. A restarted server
+# numbers its panes from %0 again, so a record's pane id may name a different
+# pane now. The server's start time tells the two apart.
+SERVER_STARTED=
+SERVER_STARTED_ISO=
+SERVER_LOADED=0
+load_server_identity() {
+  [ "$SERVER_LOADED" -eq 0 ] || return 0
+  SERVER_LOADED=1
+  SERVER_STARTED=$(tmux_cmd display-message -p '#{start_time}' 2>/dev/null || true)
+  case "$SERVER_STARTED" in ''|*[!0-9]*) SERVER_STARTED=; return 0 ;; esac
+  SERVER_STARTED_ISO=$(epoch_to_iso "$SERVER_STARTED")
+}
+
+# Succeed when the pane a record names belongs to the running tmux server. A
+# record carries the server's start time from when it was written. An older
+# record without one is trusted only when it was created after this server
+# started and, given a live pane pid, when that pid matches the stored one.
+record_on_this_server() {
+  local meta=$1 live_pid=${2:-} recorded since pid
+  load_server_identity
+  [ -n "$SERVER_STARTED" ] || return 1
+  recorded=$(meta_get "$meta" server_started)
+  if [ -n "$recorded" ]; then
+    [ "$recorded" = "$SERVER_STARTED" ]
+    return
+  fi
+  since=$(meta_get "$meta" started_at)
+  [ -n "$since" ] || since=$(meta_get "$meta" created_at)
+  [ -n "$since" ] || return 1
+  [[ ! "$since" < "$SERVER_STARTED_ISO" ]] || return 1
+  pid=$(meta_get "$meta" pane_pid)
+  [ -z "$live_pid" ] || [ -z "$pid" ] || [ "$pid" = "$live_pid" ]
+}
+
 inventory() {
   local fmt
   fmt=$'#{session_name}\t#{window_name}\t#{window_id}\t#{pane_id}\t#{pane_current_path}\t#{pane_current_command}\t#{session_path}\t#{pane_index}\t#{pane_pid}\t#{pane_tty}'
@@ -381,6 +420,8 @@ record_agent() {
     printf 'pane_index=%s\n' "$pane_index"
     printf 'pane_pid=%s\n' "$pane_pid"
     printf 'pane_tty=%s\n' "$pane_tty"
+    load_server_identity
+    [ -z "$SERVER_STARTED" ] || printf 'server_started=%s\n' "$SERVER_STARTED"
     printf 'root=%s\n' "$root"
     printf 'workspace_root=%s\n' "$workspace_root"
     [ -z "$source_root" ] || printf 'source_root=%s\n' "$source_root"
@@ -451,7 +492,7 @@ controller_meta() {
 # default to 'ego', and a controller record holds only location and scope, so
 # there is no history worth preserving behind a suffix.
 record_controller() {
-  local id=$1 session=$2 window=$3 pane=$4 root=$5 scope=$6 dir tmp socket
+  local id=$1 session=$2 window=$3 pane=$4 root=$5 scope=$6 started=${7:-} dir tmp socket
   valid_id "$id" || die "invalid controller id '$id'"
   socket=$(tmux_cmd display-message -p '#{socket_path}' 2>/dev/null || true)
   dir="$CONTROLLERS_DIR/$id"
@@ -463,10 +504,16 @@ record_controller() {
     printf 'window=%s\n' "$window"
     printf 'pane_id=%s\n' "$pane"
     printf 'socket=%s\n' "$socket"
+    # A migrated record keeps its original start time and no server stamp, so
+    # its pane is judged against the running server like any older record.
+    if [ -z "$started" ]; then
+      load_server_identity
+      [ -z "$SERVER_STARTED" ] || printf 'server_started=%s\n' "$SERVER_STARTED"
+    fi
     printf 'root=%s\n' "$root"
     printf 'scope=%s\n' "$scope"
     printf 'active=yes\n'
-    printf 'started_at=%s\n' "$(now)"
+    printf 'started_at=%s\n' "${started:-$(now)}"
     printf 'updated_at=%s\n' "$(now)"
   } > "$tmp"
   mv "$tmp" "$dir/meta"
@@ -521,17 +568,19 @@ migrate_controller_meta() {
   local old="$EGO_HOME/controller.meta" marker="$CONTROLLERS_DIR/.migrated"
   [ -f "$old" ] || return 0
   [ ! -f "$marker" ] || return 0
-  local session window pane scope root= id
+  local session window pane scope root= id started
   session=$(meta_get "$old" session)
   window=$(meta_get "$old" window)
   pane=$(meta_get "$old" pane_id)
   scope=$(meta_get "$old" scope)
+  started=$(meta_get "$old" started_at)
+  [ -n "$started" ] || started=unknown
   case "$scope" in session|server) ;; *) scope=server ;; esac
   : > "$marker"
   [ -n "$session" ] && [ -n "$window" ] || return 0
   root=$(resolve_session_root "$session" 2>/dev/null || true)
   id=$(clean_id "$session--$window")
-  record_controller "$id" "$session" "$window" "$pane" "$root" "$scope"
+  record_controller "$id" "$session" "$window" "$pane" "$root" "$scope" "$started"
   enforce_controller_panes >/dev/null
 }
 
@@ -554,8 +603,12 @@ caller_controller_id() {
     [ -f "$meta" ] || continue
     pane=$(meta_get "$meta" pane_id)
     [ "$pane" = "$TMUX_PANE" ] || continue
+    [ "$(meta_get "$meta" active)" != no ] || continue
     socket=$(meta_get "$meta" socket)
     [ -z "$socket" ] || [ "$socket" = "$caller_socket" ] || continue
+    # The socket path survives a server restart, so a matching pane id can
+    # still belong to a pane the controller never ran in.
+    record_on_this_server "$meta" || continue
     meta_get "$meta" id
     return 0
   done
@@ -821,12 +874,24 @@ pane_snapshot() {
   # must never reach tmux. Otherwise a lookup failure turns into the controller
   # inspecting, or typing into, itself.
   [ -n "$pane" ] || return 1
-  fmt=$'#{session_name}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}'
+  fmt=$'#{session_name}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}'
   out=$(tmux_cmd display-message -p -t "$pane" "$fmt" 2>/dev/null) || return 1
   # A stale pane id makes display-message print empty fields and still exit 0,
   # so an empty first field is the only reliable signal that the pane is gone.
   case "$out" in ''|$'\t'*) return 1 ;; esac
   printf '%s\n' "$out"
+}
+
+# Print the pane a record names when that pane is live AND still the one the
+# record was written for. A pane id alone can name a different pane after a
+# tmux server restart, and must never be typed into on that basis.
+record_live_pane() {
+  local meta=$1 pane snap pid
+  pane=$(meta_get "$meta" pane_id)
+  snap=$(pane_snapshot "$pane") || return 1
+  pid=${snap##*$'\t'}
+  record_on_this_server "$meta" "$pid" || return 1
+  printf '%s\n' "$pane"
 }
 
 cmd_init() {
@@ -891,23 +956,39 @@ run_agent_navigator() {
 }
 
 agent_id_for_pane() {
-  local pane=$1 dir meta
+  local pane=$1 pid=${2:-} dir meta
   for dir in "$AGENTS_DIR"/*; do
     [ -d "$dir" ] || continue
     meta="$dir/meta"
     [ -f "$meta" ] || continue
-    if [ "$(meta_get "$meta" pane_id)" = "$pane" ]; then
-      meta_get "$meta" id
-      return 0
-    fi
+    [ "$(meta_get "$meta" pane_id)" = "$pane" ] || continue
+    # A record from an earlier tmux server names another pane that happened to
+    # get this id. Reusing it would hand that record's history to a new agent.
+    record_on_this_server "$meta" "$pid" || continue
+    meta_get "$meta" id
+    return 0
   done
   return 1
+}
+
+# The id for a newly seen pane: session--window, then a pane-index suffix, then
+# a counter, so a new record never lands on top of an existing one.
+mint_agent_id() {
+  local session=$1 window=$2 pane_index=$3 id n=2
+  id=$(clean_id "$session--$window")
+  [ -e "$AGENTS_DIR/$id" ] || { printf '%s\n' "$id"; return 0; }
+  id=$(clean_id "$session--$window--p$pane_index")
+  while [ -e "$AGENTS_DIR/$id" ]; do
+    id=$(clean_id "$session--$window--p$pane_index-$n")
+    n=$((n + 1))
+  done
+  printf '%s\n' "$id"
 }
 
 cmd_scan() {
   require_tmux
   ensure_home
-  local all_rows navigator detected row session window pane pane_index id agent observed controllers= count=0 retired=0 adopted=0 dir meta existing_pane detected_panes=
+  local all_rows navigator detected row session window pane pane_index pane_pid id agent observed controllers= count=0 retired=0 adopted=0 dir meta existing_pane detected_panes=
   scan_workspaces
 
   # A controller record is retired the same way an agent record is, and liveness
@@ -917,7 +998,7 @@ cmd_scan() {
     meta="$dir/meta"
     [ -f "$meta" ] || continue
     [ "$(meta_get "$meta" active)" != no ] || continue
-    if ! pane_snapshot "$(meta_get "$meta" pane_id)" >/dev/null; then
+    if ! record_live_pane "$meta" >/dev/null; then
       retire_controller_record "$meta" || true
     fi
   done
@@ -930,9 +1011,10 @@ cmd_scan() {
     [ -f "$meta" ] || continue
     existing_pane=$(meta_get "$meta" pane_id)
     row=$(printf '%s\n' "$all_rows" | awk -F '\t' -v p="$existing_pane" '$4 == p { print; exit }')
-    # A tmux pane id is never reused, so an absent pane is permanently gone.
-    # Retiring the record here keeps dead agents out of every later context read.
-    if [ -z "$row" ]; then
+    # A pane id is never reused within one server's lifetime, so an absent pane
+    # is permanently gone. After a server restart the same id can name a new
+    # pane, which must not inherit this record: retire it instead of refreshing.
+    if [ -z "$row" ] || ! record_on_this_server "$meta" "$(printf '%s' "$row" | cut -f9)"; then
       if retire_agent_record "$meta"; then
         retired=$((retired + 1))
       fi
@@ -953,14 +1035,11 @@ cmd_scan() {
     fi
     row=$(printf '%s\n' "$all_rows" | awk -F '\t' -v p="$pane" '$4 == p { print; exit }')
     [ -n "$row" ] || continue
-    IFS=$'\t' read -r session window _ _ _ _ _ pane_index _ <<< "$row"
-    if id=$(agent_id_for_pane "$pane"); then
+    IFS=$'\t' read -r session window _ _ _ _ _ pane_index pane_pid _ <<< "$row"
+    if id=$(agent_id_for_pane "$pane" "$pane_pid"); then
       :
     else
-      id=$(clean_id "$session--$window")
-      if [ -f "$AGENTS_DIR/$id/meta" ]; then
-        id=$(clean_id "$session--$window--p$pane_index")
-      fi
+      id=$(mint_agent_id "$session" "$window" "$pane_index")
     fi
     record_agent "$id" "$row" "" "" "$agent" >/dev/null
     meta="$AGENTS_DIR/$id/meta"
@@ -976,7 +1055,8 @@ cmd_scan() {
     [ -d "$dir" ] || continue
     meta="$dir/meta"
     [ -f "$meta" ] || continue
-    if printf '%s' "$detected_panes" | grep -Fxq -- "$(meta_get "$meta" pane_id)"; then
+    if printf '%s' "$detected_panes" | grep -Fxq -- "$(meta_get "$meta" pane_id)" \
+      && record_on_this_server "$meta"; then
       meta_set "$meta" process yes
     else
       meta_set "$meta" process no
@@ -1003,7 +1083,7 @@ cmd_controllers() {
     pane=$(meta_get "$meta" pane_id)
     live=missing
     if command -v tmux >/dev/null 2>&1 && tmux_cmd list-sessions >/dev/null 2>&1 \
-      && pane_snapshot "$pane" >/dev/null 2>&1; then
+      && record_live_pane "$meta" >/dev/null 2>&1; then
       live=live
     fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(meta_get "$meta" id)" "$(meta_get "$meta" session)" \
@@ -1092,9 +1172,9 @@ cmd_list() {
     [ -n "$process" ] || process=unknown
     cwd=$(meta_get "$meta" cwd)
     command=$(meta_get "$meta" command)
-    if snap=$(pane_snapshot "$pane"); then
+    if snap=$(pane_snapshot "$pane") && record_on_this_server "$meta" "${snap##*$'\t'}"; then
       live=live
-      IFS=$'\t' read -r _ _ cwd command <<< "$snap"
+      IFS=$'\t' read -r _ _ cwd command _ <<< "$snap"
     fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s:%s\t%s\t%s\n' "$id" "$owner" "$reporting" "$origin" \
       "$live" "$process" "$agent" "$session" "$window" "$cwd" "$command"
@@ -1305,7 +1385,7 @@ cmd_forget() {
   pane=$(meta_get "$meta" pane_id)
   if [ "$purge" -eq 1 ]; then
     if command -v tmux >/dev/null 2>&1 && tmux_cmd list-sessions >/dev/null 2>&1 \
-      && pane_snapshot "$pane" >/dev/null 2>&1; then
+      && record_live_pane "$meta" >/dev/null 2>&1; then
       die "agent '$id' still has a live pane; retire it without --purge, or close its window first"
     fi
     rm -rf -- "$dir"
@@ -1408,7 +1488,7 @@ cmd_recover() {
       pane=$(meta_get "$agent_meta_file" pane_id)
       endpoint=unavailable
       if [ "$tmux_available" -eq 1 ]; then
-        if pane_snapshot "$pane" >/dev/null; then endpoint=live; else endpoint=missing; fi
+        if record_live_pane "$agent_meta_file" >/dev/null; then endpoint=live; else endpoint=missing; fi
       fi
       printf '%s owner=%s agent=%s window=%s endpoint=%s\n' \
         "$(meta_get "$agent_meta_file" id)" "$(meta_get "$agent_meta_file" owner)" \
@@ -1650,6 +1730,8 @@ cmd_peek() {
   pane=$(meta_get "$meta" pane_id)
   [ -n "$pane" ] || die "agent '$1' has no recorded pane"
   case "$lines" in ''|*[!0-9]*) die "lines must be a positive integer" ;; esac
+  pane=$(record_live_pane "$meta") \
+    || die "agent '$1' has no live pane; its pane is gone or now belongs to another program, so run 'ego scan'"
   tmux_cmd capture-pane -p -t "$pane" -S "-$lines"
 }
 
@@ -1659,8 +1741,8 @@ queue_message() {
   # Callers invoke this through a command substitution, where bash ignores
   # set -e, so a failed lookup has to be checked rather than trusted to abort.
   [ -n "$meta" ] || return 1
-  pane=$(meta_get "$meta" pane_id)
-  pane_snapshot "$pane" >/dev/null || return 1
+  pane=$(record_live_pane "$meta") || return 1
+  [ -n "$pane" ] || return 1
   dir=${meta%/meta}
   inbox="$dir/inbox"
   mkdir -p "$inbox/handled"
@@ -1710,8 +1792,8 @@ cmd_press() {
   local id=$1 requested=$2 meta pane key
   meta=$(agent_meta "$id")
   require_in_scope "$(meta_get "$meta" session)"
-  pane=$(meta_get "$meta" pane_id)
-  pane_snapshot "$pane" >/dev/null || die "agent '$id' has no live pane"
+  pane=$(record_live_pane "$meta") || die "agent '$id' has no live pane"
+  [ -n "$pane" ] || die "agent '$id' has no live pane"
   case "$requested" in
     enter) key=Enter ;;
     escape|esc) key=Escape ;;
@@ -1798,7 +1880,7 @@ cmd_onboard_workspace() {
     fi
     id=$(meta_get "$meta" id)
     pane=$(meta_get "$meta" pane_id)
-    if ! pane_snapshot "$pane" >/dev/null; then
+    if ! record_live_pane "$meta" >/dev/null; then
       printf 'warning: skipped %s because its pane is unavailable\n' "$id" >&2
       unavailable=$((unavailable + 1))
       continue

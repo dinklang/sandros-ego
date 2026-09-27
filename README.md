@@ -368,7 +368,10 @@ This archives the checkpoint, marks its agent records inactive, and returns thei
 
 ## Retire stale records
 
-A tmux pane id is never reused, so a pane that disappears is gone for good.
+A tmux pane id is never reused while one server runs, so a pane that disappears
+is gone for good. A restarted server numbers panes from `%0` again, so Ego also
+records the server's start time and treats a matching id on a newer server as a
+different pane: the old record is retired, and the new pane gets its own.
 `ego scan` retires the record of any agent whose pane has vanished, which keeps
 dead workers out of every later context read. The same rule applies to a
 controller record, and retiring one also drops its event cursor. A workspace
