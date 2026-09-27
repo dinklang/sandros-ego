@@ -95,7 +95,9 @@ workspace in reporting without changing ownership.
 
 For an Ego-owned agent:
 
-1. Read its handoff note.
+1. Read its handoff note. Its "Worker state at handoff" section shows what the
+   worker was doing when it was handed off, including a running process the
+   summary may not mention.
 2. Inspect its latest report and the last 60 pane lines before sending anything.
    Read more pane history only when those do not explain the current state.
 3. Preserve the workflow Sandro already established.

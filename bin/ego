@@ -1507,7 +1507,7 @@ cmd_handoff_workspace() {
   require_in_scope "$WORKSPACE_SESSION"
   cmd_scan >/dev/null
   write_workspace_checkpoint "$WORKSPACE_SESSION" "$WORKSPACE_SUMMARY" "$WORKSPACE_NEXT" handoff
-  local dir meta session count=0
+  local dir meta session count=0 summary_lines=
   for dir in "$AGENTS_DIR"/*; do
     [ -d "$dir" ] || continue
     meta="$dir/meta"
@@ -1515,12 +1515,26 @@ cmd_handoff_workspace() {
     session=$(meta_get "$meta" session)
     [ "$session" = "$WORKSPACE_SESSION" ] || continue
     [ "$(meta_get "$meta" active)" != no ] || continue
+    # Each agent's own note carries the workspace summary and its live state.
+    {
+      printf '# Handoff\n\n'
+      printf 'Updated: %s\n' "$(now)"
+      printf 'Handed off with workspace %s.\n\n' "$WORKSPACE_SESSION"
+      printf '## Current state\n\n%s\n' "$WORKSPACE_SUMMARY"
+      if [ -n "$WORKSPACE_NEXT" ]; then
+        printf '\n## Next action\n\n%s\n' "$WORKSPACE_NEXT"
+      fi
+      printf '\n'
+      worker_state_section "$meta"
+    } > "$dir/handoff.md"
     meta_set "$meta" owner ego
     meta_set "$meta" updated_at "$(now)"
+    summary_lines="$summary_lines$(meta_get "$meta" id): process=$(meta_get "$meta" process), latest report: $(if [ -s "$dir/status.log" ]; then tail -n 1 "$dir/status.log" | cut -f2-3 | tr '\t' ' '; else printf none; fi)"$'\n'
     count=$((count + 1))
   done
   append_event workspace-handoff "$WORKSPACE_SESSION" "$WORKSPACE_SUMMARY" "$WORKSPACE_SESSION"
   printf 'handed workspace %s and %s registered agents to Ego\n' "$WORKSPACE_SESSION" "$count"
+  [ -z "$summary_lines" ] || printf '%s' "$summary_lines"
 }
 
 cmd_recover() {
@@ -1573,6 +1587,43 @@ cmd_recover() {
   [ "$found" -eq 1 ] || die "no recorded workspace matches '${wanted:-any session}'"
 }
 
+# What a worker is doing right now, captured mechanically so a handoff note is
+# complete even when its summary does not mention a running process. Reads only
+# Ego's records and the pane; it never types into the pane.
+worker_state_section() {
+  local meta=$1 lines=${2:-20} dir status latest pending=0 pane process observed file
+  dir=${meta%/meta}
+  status="$dir/status.log"
+  printf '## Worker state at handoff\n\n'
+  printf 'Captured: %s\n' "$(now)"
+  if [ -s "$status" ]; then
+    latest=$(tail -n 1 "$status" | tr '\t' ' ')
+    printf 'Latest report: %s\n' "$latest"
+  else
+    printf 'Latest report: none recorded\n'
+  fi
+  process=$(meta_get "$meta" process)
+  observed=$(meta_get "$meta" observed_state)
+  printf 'Agent process: %s\n' "${process:-unknown}"
+  printf 'Observed screen: %s\n' "${observed:-unknown}"
+  printf 'Reporting: %s\n' "$(meta_get "$meta" reporting)"
+  for file in "$dir/inbox"/*.msg; do
+    [ -f "$file" ] || continue
+    pending=$((pending + 1))
+  done
+  printf 'Pending inbox messages: %s\n' "$pending"
+  if pane=$(record_live_pane "$meta"); then
+    printf '\nLast %s pane lines:\n\n````text\n' "$lines"
+    # Trailing blank rows are empty screen, not output.
+    tmux_cmd capture-pane -p -J -t "$pane" -S "-$lines" 2>/dev/null \
+      | awk -v n="$lines" '{ rows[NR] = $0; if ($0 ~ /[^[:space:]]/) last = NR }
+          END { first = last - n + 1; if (first < 1) first = 1; for (i = first; i <= last; i++) print rows[i] }'
+    printf '````\n'
+  else
+    printf '\nPane: gone\n'
+  fi
+}
+
 cmd_handoff() {
   local ref= session= summary= next= id meta dir
   while [ $# -gt 0 ]; do
@@ -1587,6 +1638,9 @@ cmd_handoff() {
   [ -n "$ref" ] || die "handoff requires an agent id or tmux window"
   [ -n "$summary" ] || die "handoff requires --summary"
   ensure_home
+  # Check the named session before anything can register a window in it.
+  [ -z "$session" ] || require_in_scope "$session"
+  case "$ref" in *:*) require_in_scope "${ref%%:*}" ;; esac
   if [ -n "$session" ]; then
     if id=$(agent_id_in_session "$session" "$ref"); then
       :
@@ -1601,6 +1655,8 @@ cmd_handoff() {
   meta=$(agent_meta "$id")
   require_in_scope "$(meta_get "$meta" session)"
   dir=${meta%/meta}
+  # Refresh process and screen observations so the snapshot is current.
+  scan_fleet 0 >/dev/null
   {
     printf '# Handoff\n\n'
     printf 'Updated: %s\n\n' "$(now)"
@@ -1608,11 +1664,14 @@ cmd_handoff() {
     if [ -n "$next" ]; then
       printf '\n## Next action\n\n%s\n' "$next"
     fi
+    printf '\n'
+    worker_state_section "$meta"
   } > "$dir/handoff.md"
   meta_set "$meta" owner ego
   meta_set "$meta" updated_at "$(now)"
   append_event handoff "$id" "$summary" "$(meta_get "$meta" session)"
-  printf 'handed off %s to Ego\n' "$id"
+  printf 'handed off %s to Ego\n\n' "$id"
+  worker_state_section "$meta"
 }
 
 cmd_takeback() {

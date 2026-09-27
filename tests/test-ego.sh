@@ -92,6 +92,18 @@ grep -q '^kind=primary$' "$EGO_HOME/workspaces/alpha/meta"
 "$ROOT/bin/ego" handoff alpha--agent-one --summary "profiling is active" --next "collect a baseline" >/dev/null
 grep -q '^owner=ego$' "$EGO_HOME/agents/alpha--agent-one/meta"
 grep -q 'profiling is active' "$EGO_HOME/agents/alpha--agent-one/handoff.md"
+# The note records the worker's live state, whatever the summary says.
+grep -q '^## Worker state at handoff$' "$EGO_HOME/agents/alpha--agent-one/handoff.md"
+grep -q '^Latest report: none recorded$' "$EGO_HOME/agents/alpha--agent-one/handoff.md"
+grep -q '^Agent process: yes$' "$EGO_HOME/agents/alpha--agent-one/handoff.md"
+grep -q '^Observed screen: idle$' "$EGO_HOME/agents/alpha--agent-one/handoff.md"
+grep -q '^Last 20 pane lines:$' "$EGO_HOME/agents/alpha--agent-one/handoff.md"
+tmux -L "$SOCKET" send-keys -t alpha:agent-one 'echo long-running-marker' Enter
+sleep 0.5
+handoff_output=$("$ROOT/bin/ego" handoff alpha--agent-one --summary "profiling is active" --next "collect a baseline")
+printf '%s\n' "$handoff_output" | grep -q '^handed off alpha--agent-one to Ego$'
+printf '%s\n' "$handoff_output" | grep -q '^long-running-marker$'
+grep -q '^long-running-marker$' "$EGO_HOME/agents/alpha--agent-one/handoff.md"
 
 "$ROOT/bin/ego" report alpha--agent-one working "baseline started" >/dev/null
 grep -q $'\tworking\tbaseline started$' "$EGO_HOME/agents/alpha--agent-one/status.log"
@@ -183,8 +195,10 @@ grep -q 'workspace can recover' "$EGO_HOME/workspaces/alpha/checkpoint.md"
 "$ROOT/bin/ego" stow alpha --summary "only volatile context" --next "resume later" >/dev/null
 grep -q '^Mode: stow$' "$EGO_HOME/workspaces/alpha/checkpoint.md"
 
-"$ROOT/bin/ego" handoff-workspace beta --summary "delegate beta" >/dev/null
+"$ROOT/bin/ego" handoff-workspace beta --summary "delegate beta" | grep -q '^beta--agent-two: process=yes, latest report: none$'
 grep -q '^owner=ego$' "$EGO_HOME/agents/beta--agent-two/meta"
+grep -q '^## Worker state at handoff$' "$EGO_HOME/agents/beta--agent-two/handoff.md"
+grep -q '^delegate beta$' "$EGO_HOME/agents/beta--agent-two/handoff.md"
 "$ROOT/bin/ego" takeback-workspace beta >/dev/null
 grep -q '^owner=human$' "$EGO_HOME/agents/beta--agent-two/meta"
 

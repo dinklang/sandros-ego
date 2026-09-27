@@ -235,6 +235,12 @@ ego handoff project-a--profile \
 This changes the record from `owner=human` to `owner=ego`.
 It does not restart the worker or change its tmux window.
 
+Below your summary, the handoff note records the worker's state at that moment:
+its latest report, whether its agent process is running, Agent Navigator's
+screen observation, pending inbox messages, and the last 20 pane lines. The
+command prints the same section, so a controller that runs the handoff for you
+sees a running process even when the summary does not mention it.
+
 Take control back with:
 
 ```sh
