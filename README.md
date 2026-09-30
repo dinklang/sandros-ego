@@ -62,11 +62,13 @@ git --version
 
 ### 2. Install Agent Navigator
 
-Ego uses Agent Navigator to find agent processes across tmux panes. Clone or
-copy its repository, then run:
+Ego uses Agent Navigator to find agent processes across tmux panes. Its source
+lives in the dotfiles repository
+([dinklang/dotfiles](https://github.com/dinklang/dotfiles), `agent-navigator/`):
 
 ```sh
-cd /path/to/agent-navigator
+git clone git@github.com:dinklang/dotfiles.git
+cd dotfiles/agent-navigator
 ./install.sh
 ```
 
@@ -585,8 +587,8 @@ Ego reads the tmux options already used by your configuration:
 ```
 
 It labels each recorded session as `primary`, `secondary`, or `external` based on its `session_path`.
-Your current personal configuration sets `@workspace_primary` to `~/Work` and leaves the secondary root unset.
-The same code will recognize both roots on a machine that configures both.
+The dotfiles tmux templates set `@workspace_primary` to `~/workplace` and `@workspace_secondary` to `~/Work` when `~/workplace` exists (Brazil machines).
+Otherwise `@workspace_primary` is `~/Work` and the secondary root is unset.
 
 ## Files and locations
 

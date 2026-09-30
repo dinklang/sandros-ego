@@ -3,8 +3,10 @@
 # Keep the absolute executable path. A rule for bare `ego` could match another
 # executable earlier in PATH, and a broad `tmux` rule would permit tmux run-shell.
 # `forget` is left out on purpose: `forget --purge` removes a record, so the
-# controller should ask before running it. `promote` is left out because widening
-# scope lets the controller act on another controller's workspace.
+# controller should ask before running it; `purge` is left out for the same
+# reason. `promote` is left out because widening scope lets the controller act
+# on another controller's workspace; `scope` is allowed because Ego only lets a
+# controller narrow its own scope.
 prefix_rule(
     pattern=[
         "/ABSOLUTE/HOME/.ego/bin/ego",
@@ -28,6 +30,18 @@ prefix_rule(
             "recover",
             "peek",
             "send",
+            "press",
+            "scope",
+            "workspaces",
+            "retire",
+            "inspect",
+            "handback",
+            "takeback",
+            "watch",
+            "reset",
+            "inbox",
+            "ack",
+            "report",
         ],
     ],
     decision="allow",
