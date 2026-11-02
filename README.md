@@ -216,8 +216,8 @@ Detection uses the pane TTY foreground process group, not the window name. It re
 ego onboard project-a:review
 ```
 
-Onboarding a window Ego has not recorded registers it first. For an unsupported
-custom agent, name its type and, optionally, its record id:
+Onboarding a window Ego has not recorded registers it first. When detection
+misses the agent, set its type and, optionally, its record id:
 
 ```sh
 ego onboard project-a:review --agent aider --id project-a-review
@@ -377,7 +377,7 @@ Ego creates branch `ego/<agent-id>` and records the worktree path. Pass `--branc
 Instructions and reports use separate paths.
 
 - `ego send` writes an instruction into the agent's durable inbox and rings its tmux pane.
-- `ego inbox` lets the worker read pending instructions and moves them to `inbox/handled/`.
+- `ego inbox` lets the worker read pending instructions and moves them to `inbox/handled/`. A worker reading its own `ego context` handles them the same way.
 - `ego report` appends a material worker update to its status log.
 
 Reporting stays active during attended work. Handoff changes who must react and continue supervision. It does not turn reporting on.

@@ -1333,13 +1333,23 @@ print_worker_context() {
   printf '\n## Brief\n\n'
   if [ -s "$dir/brief.md" ]; then cat "$dir/brief.md"; else printf 'No brief recorded.\n'; fi
   printf '\n## Pending instructions\n\n'
-  for file in "$dir/inbox"/*.msg; do
-    [ -f "$file" ] || continue
-    found=1
-    printf 'MESSAGE %s\n' "$(basename "$file" .msg)"
-    cat "$file"
-  done
-  [ "$found" -eq 1 ] || printf 'No pending messages.\n'
+  # Only the worker reading its own context handles what it sees; a controller
+  # or Sandro looking on leaves the messages pending.
+  if [ "$(caller_role)" = worker ] && [ "$EGO_AGENT_ID" = "$id" ]; then
+    print_inbox "$id" "$dir"
+  else
+    for file in "$dir/inbox"/*.msg; do
+      [ -f "$file" ] || continue
+      found=1
+      printf 'MESSAGE %s\n' "$(basename "$file" .msg)"
+      cat "$file"
+    done
+    if [ "$found" -eq 1 ]; then
+      printf '\nRun %s inbox %s to mark them handled.\n' "$ego_cli" "$id"
+    else
+      printf 'No pending messages.\n'
+    fi
+  fi
   note="$WORKSPACES_DIR/$(clean_id "$session")/checkpoint.md"
   if [ -f "$note" ]; then
     printf '\n## Workspace note\n\n'
@@ -1592,10 +1602,16 @@ resolve_agent_ref() {
 # 'onboard' or 'spawn' brings an agent record back. --purge is the one delete.
 cmd_retire() {
   local target= stale=0 purge=0 controller= filter= id meta session dir sessions count=0
+  # --purge must come first so an approval rule on the 'retire --purge' prefix
+  # catches every delete.
+  if [ "${1:-}" = --purge ]; then
+    purge=1
+    shift
+  fi
   while [ $# -gt 0 ]; do
     case "$1" in
       --stale) stale=1; shift ;;
-      --purge) purge=1; shift ;;
+      --purge) die "put --purge first: ego retire --purge <id>" ;;
       --controller) [ $# -ge 2 ] || die "--controller requires an id"; controller=$2; shift 2 ;;
       --session) [ $# -ge 2 ] || die "--session requires a value"; filter=$2; shift 2 ;;
       --*) die "unknown retire option '$1'" ;;
@@ -2168,10 +2184,14 @@ cmd_press() {
 
 cmd_inbox() {
   [ $# -le 1 ] || die "inbox takes at most one agent id"
-  local id meta dir file found=0 message_id
+  local id meta
   id=$(self_or_named_agent "${1:-}") || exit 1
   meta=$(agent_meta "$id")
-  dir=${meta%/meta}
+  print_inbox "$id" "${meta%/meta}"
+}
+
+print_inbox() {
+  local id=$1 dir=$2 file found=0 message_id
   mkdir -p "$dir/inbox/handled"
   # Reading a message handles it, so a worker has nothing to acknowledge.
   for file in "$dir/inbox"/*.msg; do

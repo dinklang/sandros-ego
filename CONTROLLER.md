@@ -74,7 +74,7 @@ for its own workspace, and peek at a sibling there, and every other command
 refuses it. Workers read their brief, check their own inbox at natural
 checkpoints, and report material phase changes. Reading the inbox marks those
 messages handled, so `ego inbox <id>` on a worker's behalf takes them out of
-its pending list.
+its pending list. `ego context --agent <id>` shows them and leaves them pending.
 An agent with no assignment reports `idle`, not `blocked`. `done` means its
 assigned scope is complete, even when the broader project has a later external
 gate. `blocked` means the assigned scope cannot proceed.

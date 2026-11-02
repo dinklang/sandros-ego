@@ -87,7 +87,7 @@ Discovery delegates identity to Agent Navigator. It matches recognized processes
 An Ego spawn records `origin=ego`, starts with `owner=ego`, and its launch prompt tells it to run `ego context`. For a worker, that command prints its own view: the reporting contract, its brief, pending instructions, its workspace note, and its siblings. The contract lives in `bin/ego`, not in each prompt, so it changes without respawning anyone and a pasted onboarding message stays one line. A discovered worker starts human-owned and does not report until it is onboarded; its onboarding message tells it to run `ego context --agent <id>`, because Ego did not launch it and it has no `EGO_AGENT_ID`.
 `ego onboard <session>:` scans the tmux server and sends that contract to every active, non-reporting worker in one session. It leaves ownership unchanged and does not resend the contract to workers already reporting. `ego onboard <id> --off` withdraws the contract and keeps the record.
 
-Reading the inbox is what handles a message: `ego inbox` prints the pending messages and moves each one to `inbox/handled/`. A handoff counts the messages a worker has not read yet as unread.
+Reading the inbox is what handles a message: `ego inbox` prints the pending messages and moves each one to `inbox/handled/`. A worker with `EGO_AGENT_ID` reading its own `ego context` handles them the same way; any other caller's context read leaves them pending. A handoff counts the messages a worker has not read yet as unread.
 
 ## Recovery
 

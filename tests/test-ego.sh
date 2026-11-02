@@ -470,7 +470,9 @@ grep -q '^active=no$' "$EGO_HOME/agents/alpha--agent-ctx/meta"
 "$ROOT/bin/ego" retire --purge alpha--agent-transient | grep -q '^purged the record for alpha--agent-transient$'
 test ! -d "$EGO_HOME/agents/alpha--agent-transient"
 grep -q $'\tpurged\talpha--agent-transient\t' "$EGO_HOME/events.log"
-"$ROOT/bin/ego" retire alpha:agent-ctx --purge >/dev/null
+"$ROOT/bin/ego" retire alpha:agent-ctx --purge 2>&1 | grep -q 'put --purge first: ego retire --purge <id>'
+test -d "$EGO_HOME/agents/alpha--agent-ctx"
+"$ROOT/bin/ego" retire --purge alpha:agent-ctx >/dev/null
 test ! -d "$EGO_HOME/agents/alpha--agent-ctx"
 if "$ROOT/bin/ego" retire --purge alpha--optimizer >/dev/null 2>&1; then
   printf 'retire --purge removed an agent with a live pane\n' >&2
@@ -675,7 +677,16 @@ if EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" context --all >/dev/null 2>&1; then
 fi
 # A worker's context is its own: who it is, how to report, its brief, and its
 # pending instructions.
+context_message=$("$ROOT/bin/ego" send alpha--three "context instruction" | awk '{ print $2 }')
+# Sandro looking at a worker's context leaves its messages pending.
+"$ROOT/bin/ego" context --agent alpha--three | grep -q "^MESSAGE $context_message$"
+test -f "$EGO_HOME/agents/alpha--three/inbox/$context_message.msg"
 worker_context=$(EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" context)
+printf '%s\n' "$worker_context" | grep -q "^MESSAGE $context_message$"
+test ! -f "$EGO_HOME/agents/alpha--three/inbox/$context_message.msg"
+test -f "$EGO_HOME/agents/alpha--three/inbox/handled/$context_message.msg"
+grep -q $'\thandled\talpha--three\t'"$context_message" "$EGO_HOME/events.log"
+EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" inbox | grep -q '^No pending messages\.$'
 printf '%s\n' "$worker_context" | grep -q '^Worker: alpha--three$'
 printf '%s\n' "$worker_context" | grep -q '^## How to report$'
 printf '%s\n' "$worker_context" | grep -q 'report alpha--three <working|idle|blocked|needs-decision|done|failed|note> <message>$'
