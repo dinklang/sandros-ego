@@ -2,48 +2,38 @@
 # Replace /ABSOLUTE/HOME with the absolute home directory on this machine.
 # Keep the absolute executable path. A rule for bare `ego` could match another
 # executable earlier in PATH, and a broad `tmux` rule would permit tmux run-shell.
-# `forget` is left out on purpose: `forget --purge` removes a record, so the
-# controller should ask before running it; `purge` is left out for the same
-# reason. `promote` is left out because widening scope lets the controller act
-# on another controller's workspace; `scope` is allowed because Ego only lets a
-# controller narrow its own scope.
+# `start` is left out because a controller may not start another controller.
+# `scope` is allowed because Ego only lets a controller narrow its own scope.
 prefix_rule(
     pattern=[
         "/ABSOLUTE/HOME/.ego/bin/ego",
         [
-            "session-start",
-            "scan",
-            "list",
-            "controllers",
             "context",
-            "status",
-            "prune",
-            "register",
-            "spawn",
-            "onboard",
-            "onboard-workspace",
-            "handoff",
-            "checkpoint",
-            "stow",
-            "handoff-workspace",
-            "takeback-workspace",
-            "recover",
+            "list",
+            "watch",
             "peek",
             "send",
             "press",
-            "scope",
-            "workspaces",
-            "retire",
-            "inspect",
+            "spawn",
+            "onboard",
+            "handoff",
             "handback",
-            "takeback",
-            "watch",
             "reset",
+            "retire",
+            "scope",
             "inbox",
-            "ack",
             "report",
         ],
     ],
     decision="allow",
     justification="Allow the protected Ego controller to access tmux without granting Codex full access",
+)
+
+# `retire --purge` removes a record, so the controller asks before running it.
+# The most restrictive matching rule wins, so this overrides the allow above for
+# the `retire --purge <id>` form that CONTROLLER.md uses.
+prefix_rule(
+    pattern=["/ABSOLUTE/HOME/.ego/bin/ego", "retire", "--purge"],
+    decision="prompt",
+    justification="Purging deletes an agent's Ego record; confirm with Sandro first",
 )

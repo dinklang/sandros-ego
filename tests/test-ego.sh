@@ -17,7 +17,7 @@ grep -q 'controller_dir="$EGO_HOME/controller"' "$ROOT/bin/ego"
 # Claude runs the controller by default; Kiro runs the workers.
 grep -q 'local session= window=ego agent=claude scope=' "$ROOT/bin/ego"
 grep -q 'local name=$1 session= root= id= brief= command_text= agent=kiro' "$ROOT/bin/ego"
-# Retirement must survive a rescan, or archive-workspace and forget undo themselves.
+# Retirement must survive a rescan, or retire undoes itself.
 grep -q "active=\$(meta_get \"\$meta\" active)" "$ROOT/bin/ego"
 # display-message needs "=name:"; the bare "=name" form silently returns nothing.
 grep -q 'display-message -p -t "=$session:" .#{session_path}.' "$ROOT/bin/ego"
@@ -52,16 +52,41 @@ cleanup() {
 trap cleanup EXIT
 
 export EGO_HOME="$TMP/state"
-# Keep every command away from the real ~/.ego installation.
+# Keep every command away from Sandro's live ~/.ego.
 export EGO_ROOT="$TMP/live-root"
 export EGO_TMUX_SOCKET="$SOCKET"
 export EGO_AGENT_NAVIGATOR="$TMP/fake-agent-navigator"
 
-EGO_ROOT="$TMP/ego-root" EGO_INSTALL_DIR="$TMP/install" "$ROOT/bin/ego" install >/dev/null
-test -x "$TMP/install/ego"
+# install.sh copies the command and the guide, and records where the repository
+# is. It runs from any directory and only ever into a temporary root here.
+(cd "$TMP" && EGO_ROOT="$TMP/ego-root" EGO_INSTALL_DIR="$TMP/install" bash "$ROOT/install.sh") \
+  | grep -qx "installed Ego at $TMP/install/ego"
+test -n "$(find "$TMP/install/ego" -perm 755)"
+cmp -s "$ROOT/bin/ego" "$TMP/install/ego"
 test "$(cat "$TMP/install/repo-root")" = "$ROOT"
-test -f "$TMP/ego-root/CONTROLLER.md"
-"$TMP/install/ego" --help | grep -q '^  ego install$'
+test -n "$(find "$TMP/ego-root/CONTROLLER.md" -perm 644)"
+cmp -s "$ROOT/CONTROLLER.md" "$TMP/ego-root/CONTROLLER.md"
+test ! -e "$TMP/ego-root/bin"
+test -z "$(find "$TMP/install" -name '.repo-root.*')"
+# EGO_ROOT alone moves both defaults; EGO_CONTROLLER_GUIDE moves the guide.
+EGO_ROOT="$TMP/ego-root2" EGO_CONTROLLER_GUIDE="$TMP/guide/guide.md" bash "$ROOT/install.sh" >/dev/null
+test -x "$TMP/ego-root2/bin/ego"
+test -f "$TMP/guide/guide.md"
+test ! -e "$TMP/ego-root2/CONTROLLER.md"
+# help lists exactly the current commands.
+help_commands=$("$TMP/install/ego" help | awk '$1 == "ego" { print $2 }' | sort -u | paste -sd' ' -)
+test "$help_commands" = "context handback handoff inbox list onboard peek press report reset retire scope send spawn start watch"
+# Every removed command, older alias, and fold fails as unknown, for any caller.
+for removed in ack inspect offboard scan register purge install takeback handoff-workspace \
+  takeback-workspace onboard-workspace session-start status recover forget prune archive-workspace \
+  controllers workspaces promote checkpoint stow init; do
+  if "$ROOT/bin/ego" "$removed" >/dev/null 2>&1; then
+    printf 'ego %s still runs\n' "$removed" >&2
+    exit 1
+  fi
+  "$ROOT/bin/ego" "$removed" x 2>&1 >/dev/null | grep -q "^error: unknown command '$removed'$"
+  EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" "$removed" 2>&1 >/dev/null | grep -q "^error: unknown command '$removed'$"
+done
 "$TMP/install/ego" handoff --help | grep -q '^Usage: ego handoff'
 "$TMP/install/ego" report --help | grep -q 'working|idle|blocked|needs-decision|done|failed|note'
 "$TMP/install/ego" press --help | grep -q '^Usage: ego press'
@@ -81,8 +106,7 @@ tmux -L "$SOCKET" new-window -d -t alpha: -n agent-one -c "$TMP"
 tmux -L "$SOCKET" new-window -d -t alpha: -n optimizer -c "$TMP"
 tmux -L "$SOCKET" new-session -d -s beta -c "$TMP" -n agent-two
 
-"$ROOT/bin/ego" init >/dev/null
-"$ROOT/bin/ego" scan >/dev/null
+"$ROOT/bin/ego" context >/dev/null
 
 test -f "$EGO_HOME/agents/alpha--agent-one/meta"
 test -f "$EGO_HOME/agents/beta--agent-two/meta"
@@ -118,13 +142,33 @@ grep -q $'\tworking\tchecking output$' "$EGO_HOME/agents/alpha--agent-one/status
 grep -q $'\tidle\tno assignment$' "$EGO_HOME/agents/alpha--agent-one/status.log"
 "$ROOT/bin/ego" report alpha--agent-one working "baseline started" >/dev/null
 
+# peek prints the handoff note while Ego owns the agent, the latest report, and
+# the last pane lines, but not the handoff's own older pane snapshot.
+peek_output=$("$ROOT/bin/ego" peek alpha--agent-one)
+printf '%s\n' "$peek_output" | grep -q '^# alpha--agent-one$'
+printf '%s\n' "$peek_output" | grep -q '^## Next action$'
+printf '%s\n' "$peek_output" | grep -q '^collect a baseline$'
+printf '%s\n' "$peek_output" | grep -q '^Latest report: .* working baseline started$'
+printf '%s\n' "$peek_output" | grep -q '^Last 60 pane lines:$'
+printf '%s\n' "$peek_output" | grep -q '^long-running-marker$'
+if printf '%s\n' "$peek_output" | grep -q '^## Worker state at handoff$'; then
+  printf 'peek repeated the handoff snapshot\n' >&2
+  exit 1
+fi
+"$ROOT/bin/ego" peek alpha:agent-one 5 | grep -q '^Last 5 pane lines:$'
+
 "$ROOT/bin/ego" onboard alpha--agent-one >/dev/null
 grep -q '^reporting=on$' "$EGO_HOME/agents/alpha--agent-one/meta"
 message=$(find "$EGO_HOME/agents/alpha--agent-one/inbox" -maxdepth 1 -name '*.msg' -exec basename {} .msg \; | head -1)
 test -n "$message"
-"$ROOT/bin/ego" inbox alpha--agent-one | grep -q "MESSAGE $message"
-"$ROOT/bin/ego" ack alpha--agent-one "$message" >/dev/null
+# Reading the inbox handles what it lists, so nothing is left to acknowledge.
+# Capture first: grep -q would close the pipe before the read finished.
+inbox_output=$("$ROOT/bin/ego" inbox alpha--agent-one)
+printf '%s\n' "$inbox_output" | grep -q "^MESSAGE $message$"
 test -f "$EGO_HOME/agents/alpha--agent-one/inbox/handled/$message.msg"
+test ! -f "$EGO_HOME/agents/alpha--agent-one/inbox/$message.msg"
+grep -q $'\thandled\talpha--agent-one\t'"$message"$'\talpha$' "$EGO_HOME/events.log"
+"$ROOT/bin/ego" inbox alpha--agent-one | grep -q '^No pending messages\.$'
 "$ROOT/bin/ego" press alpha--agent-one enter | grep -q '^pressed enter for alpha--agent-one$'
 if "$ROOT/bin/ego" press alpha--agent-one arbitrary >/dev/null 2>&1; then
   printf 'press accepted an unrestricted key\n' >&2
@@ -152,16 +196,18 @@ if grep -q 'no-such-agent' "$EGO_HOME/events.log"; then
   exit 1
 fi
 # A recorded agent whose pane id is empty must not reach tmux either.
-"$ROOT/bin/ego" register alpha:agent-one --id paneless >/dev/null
+"$ROOT/bin/ego" onboard alpha:agent-one --id paneless >/dev/null
+grep -q '^window=agent-one$' "$EGO_HOME/agents/paneless/meta"
 sed -i 's/^pane_id=.*/pane_id=/' "$EGO_HOME/agents/paneless/meta"
 if "$ROOT/bin/ego" send paneless hello >/dev/null 2>&1; then
   printf 'send reached an agent with no recorded pane\n' >&2
   exit 1
 fi
-if "$ROOT/bin/ego" peek paneless >/dev/null 2>&1; then
+if "$ROOT/bin/ego" peek paneless | grep -q 'pane lines:$'; then
   printf 'peek reached an agent with no recorded pane\n' >&2
   exit 1
 fi
+"$ROOT/bin/ego" peek paneless | grep -q '^Pane: gone$'
 if "$ROOT/bin/ego" press paneless enter >/dev/null 2>&1; then
   printf 'press reached an agent with no recorded pane\n' >&2
   exit 1
@@ -170,61 +216,69 @@ rm -rf "$EGO_HOME/agents/paneless"
 # meta_get on a missing file must return empty instead of blocking on stdin.
 test -z "$("$ROOT/bin/ego" peek no-such-agent 2>/dev/null </dev/null || true)"
 
-onboard_output=$("$ROOT/bin/ego" onboard-workspace alpha)
+onboard_output=$("$ROOT/bin/ego" onboard alpha:)
 printf '%s\n' "$onboard_output" | grep -q '^onboarded 1 agents in workspace alpha; 1 already reporting; 0 unavailable$'
 grep -q '^reporting=on$' "$EGO_HOME/agents/alpha--optimizer/meta"
 grep -q '^owner=human$' "$EGO_HOME/agents/alpha--optimizer/meta"
 optimizer_messages_before=$(find "$EGO_HOME/agents/alpha--optimizer/inbox" -maxdepth 1 -name '*.msg' | wc -l | tr -d ' ')
-onboard_output=$("$ROOT/bin/ego" onboard-workspace alpha)
+onboard_output=$("$ROOT/bin/ego" onboard alpha:)
 printf '%s\n' "$onboard_output" | grep -q '^onboarded 0 agents in workspace alpha; 2 already reporting; 0 unavailable$'
 optimizer_messages_after=$(find "$EGO_HOME/agents/alpha--optimizer/inbox" -maxdepth 1 -name '*.msg' | wc -l | tr -d ' ')
 test "$optimizer_messages_before" -eq "$optimizer_messages_after"
 
-takeback_output=$("$ROOT/bin/ego" takeback alpha--agent-one)
-printf '%s\n' "$takeback_output" | grep -q 'latest report:.*working.*baseline started'
-printf '%s\n' "$takeback_output" | grep -q '^reporting remains on$'
-printf '%s\n' "$takeback_output" | grep -q '^Last 60 pane lines:$'
-"$ROOT/bin/ego" inspect alpha--agent-one 5 | grep -q '^Last 5 pane lines:$'
-"$ROOT/bin/ego" inspect alpha:agent-one | grep -q '^Latest report: '
+handback_output=$("$ROOT/bin/ego" handback alpha--agent-one)
+printf '%s\n' "$handback_output" | grep -q 'latest report:.*working.*baseline started'
+printf '%s\n' "$handback_output" | grep -q '^reporting remains on$'
+printf '%s\n' "$handback_output" | grep -q '^Last 60 pane lines:$'
+grep -q $'\thandback\talpha--agent-one\t' "$EGO_HOME/events.log"
 grep -q '^owner=human$' "$EGO_HOME/agents/alpha--agent-one/meta"
 "$ROOT/bin/ego" handoff agent-one --session alpha --summary "short selector" >/dev/null
 grep -q '^owner=ego$' "$EGO_HOME/agents/alpha--agent-one/meta"
-"$ROOT/bin/ego" takeback agent-one --session alpha >/dev/null
+"$ROOT/bin/ego" handback agent-one --session alpha >/dev/null
 grep -q '^owner=human$' "$EGO_HOME/agents/alpha--agent-one/meta"
 alpha_pane=$(tmux -L "$SOCKET" list-panes -t alpha:agent-one -F '#{pane_id}')
 TMUX=test TMUX_PANE="$alpha_pane" "$ROOT/bin/ego" handoff agent-one --summary "current session selector" >/dev/null
 grep -q '^owner=ego$' "$EGO_HOME/agents/alpha--agent-one/meta"
-TMUX=test TMUX_PANE="$alpha_pane" "$ROOT/bin/ego" takeback agent-one >/dev/null
+TMUX=test TMUX_PANE="$alpha_pane" "$ROOT/bin/ego" handback agent-one >/dev/null
 grep -q '^owner=human$' "$EGO_HOME/agents/alpha--agent-one/meta"
 
-"$ROOT/bin/ego" checkpoint alpha --summary "workspace can recover" --next "run checks" >/dev/null
-grep -q 'workspace can recover' "$EGO_HOME/workspaces/alpha/checkpoint.md"
-"$ROOT/bin/ego" recover alpha | grep -q 'run checks'
-"$ROOT/bin/ego" stow alpha --summary "only volatile context" --next "resume later" >/dev/null
-grep -q '^Mode: stow$' "$EGO_HOME/workspaces/alpha/checkpoint.md"
-
-"$ROOT/bin/ego" handoff-workspace beta --summary "delegate beta" | grep -q '^beta--agent-two: process=yes, latest report: none$'
+# A session: target hands off or back every active agent in a workspace.
+handoff_output=$("$ROOT/bin/ego" handoff beta: --summary "delegate beta" --next "collect results")
+printf '%s\n' "$handoff_output" | grep -q '^handed workspace beta and 1 registered agents to Ego$'
+printf '%s\n' "$handoff_output" | grep -q '^beta--agent-two: process=yes, latest report: none$'
 grep -q '^owner=ego$' "$EGO_HOME/agents/beta--agent-two/meta"
 grep -q '^## Worker state at handoff$' "$EGO_HOME/agents/beta--agent-two/handoff.md"
 grep -q '^delegate beta$' "$EGO_HOME/agents/beta--agent-two/handoff.md"
-"$ROOT/bin/ego" takeback-workspace beta >/dev/null
-grep -q '^owner=human$' "$EGO_HOME/agents/beta--agent-two/meta"
-# The session: target is the same operation through the paired verbs.
-"$ROOT/bin/ego" handoff beta: --summary "delegate beta again" | grep -q '^handed workspace beta and 1 registered agents to Ego$'
-grep -q '^owner=ego$' "$EGO_HOME/agents/beta--agent-two/meta"
+grep -q '^Mode: handoff$' "$EGO_HOME/workspaces/beta/checkpoint.md"
+"$ROOT/bin/ego" context --full --session beta | grep -q '^collect results$'
 "$ROOT/bin/ego" handback beta: | grep -q '^returned workspace beta and 1 registered agents to human control$'
+grep -q $'\tworkspace-handback\tbeta\t' "$EGO_HOME/events.log"
 grep -q '^owner=human$' "$EGO_HOME/agents/beta--agent-two/meta"
 "$ROOT/bin/ego" handoff beta:agent-two --summary "one agent by session:window" >/dev/null
 grep -q '^owner=ego$' "$EGO_HOME/agents/beta--agent-two/meta"
 "$ROOT/bin/ego" handback beta:agent-two | grep -q '^returned beta--agent-two to human control$'
 grep -q '^owner=human$' "$EGO_HOME/agents/beta--agent-two/meta"
 
-# onboard registers a window Ego has no record of, and offboard reverses it.
+# onboard registers a window Ego has no record of, and --off reverses it
+# without retiring the record.
 tmux -L "$SOCKET" new-window -d -t beta: -n late -c "$TMP"
 "$ROOT/bin/ego" onboard beta:late | grep -q '^onboarded beta--late with message '
 grep -q '^reporting=on$' "$EGO_HOME/agents/beta--late/meta"
-"$ROOT/bin/ego" offboard beta:late | grep -q '^offboarded beta--late with message '
+"$ROOT/bin/ego" inbox beta--late >/dev/null
+"$ROOT/bin/ego" onboard beta:late --off | grep -q '^turned reporting off for beta--late with message '
 grep -q '^reporting=off$' "$EGO_HOME/agents/beta--late/meta"
+grep -q '^active=yes$' "$EGO_HOME/agents/beta--late/meta"
+grep -q '^owner=human$' "$EGO_HOME/agents/beta--late/meta"
+inbox_output=$("$ROOT/bin/ego" inbox beta--late)
+printf '%s\n' "$inbox_output" | grep -q "^Leave Ego's reporting protocol"
+grep -q $'\treporting-off\tbeta--late\t' "$EGO_HOME/events.log"
+for bad_off in "beta: --off" "beta:late --off --agent kiro"; do
+  # shellcheck disable=SC2086
+  if "$ROOT/bin/ego" onboard $bad_off >/dev/null 2>&1; then
+    printf 'onboard accepted %s\n' "$bad_off" >&2
+    exit 1
+  fi
+done
 tmux -L "$SOCKET" kill-window -t beta:late
 
 # Worker names stay short role names.
@@ -244,14 +298,16 @@ test ! -e "$EGO_ROOT/bin/ego"
 test -x "$EGO_ROOT/bin/ego"
 cmp -s "$ROOT/bin/ego" "$EGO_ROOT/bin/ego"
 test -f "$EGO_ROOT/CONTROLLER.md"
+# That first install goes through install.sh, which also records the repository.
+test "$(cat "$EGO_ROOT/bin/repo-root")" = "$ROOT"
 # The installed copy warns when it no longer matches its repository.
 if "$EGO_ROOT/bin/ego" context 2>&1 >/dev/null | grep -q 'installed Ego differs'; then
   printf 'a matching installed copy reported drift\n' >&2
   exit 1
 fi
 printf '\n' >> "$EGO_ROOT/CONTROLLER.md"
-"$EGO_ROOT/bin/ego" context 2>&1 >/dev/null | grep -q "installed Ego differs from $ROOT; run 'ego install'"
-"$ROOT/bin/ego" install >/dev/null
+"$EGO_ROOT/bin/ego" context 2>&1 >/dev/null | grep -q "installed Ego differs from $ROOT; run ./install.sh there"
+bash "$ROOT/install.sh" >/dev/null
 if "$EGO_ROOT/bin/ego" context 2>&1 >/dev/null | grep -q 'installed Ego differs'; then
   printf 'a reinstalled copy still reported drift\n' >&2
   exit 1
@@ -288,7 +344,7 @@ PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" spawn isolated --session alpha --root
 grep -q '^branch=ego/alpha--isolated$' "$EGO_HOME/agents/alpha--isolated/meta"
 grep -q "^worktree=$EGO_HOME/worktrees/alpha--isolated$" "$EGO_HOME/agents/alpha--isolated/meta"
 test -d "$EGO_HOME/worktrees/alpha--isolated"
-"$ROOT/bin/ego" scan >/dev/null
+"$ROOT/bin/ego" context >/dev/null
 grep -q '^branch=ego/alpha--isolated$' "$EGO_HOME/agents/alpha--isolated/meta"
 grep -q "^root=$EGO_HOME/worktrees/alpha--isolated$" "$EGO_HOME/agents/alpha--isolated/meta"
 
@@ -316,7 +372,7 @@ if "$ROOT/bin/ego" spawn bad-agent --session alpha --root "$TMP" --agent gemini 
   exit 1
 fi
 tmux -L "$SOCKET" new-window -d -t alpha: -n kiro-manual -c "$TMP"
-"$ROOT/bin/ego" register alpha:kiro-manual --agent kiro >/dev/null
+"$ROOT/bin/ego" onboard alpha:kiro-manual --agent kiro >/dev/null
 grep -q '^agent=kiro$' "$EGO_HOME/agents/alpha--kiro-manual/meta"
 PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" start --session alpha --window ego-kiro --agent kiro >/dev/null
 grep -q "^exec kiro-cli chat 'You are Sandro'\\\\''s Ego" "$EGO_HOME/controllers/alpha--ego-kiro/launch.sh"
@@ -329,14 +385,13 @@ grep -q "^export EGO_CONTROLLER_ID='alpha--ego-kiro'$" "$EGO_HOME/controllers/al
 # A controller covers its own session unless told otherwise.
 grep -q '^scope=alpha$' "$EGO_HOME/controllers/alpha--ego-kiro/meta"
 tmux -L "$SOCKET" display-message -p -t "=alpha:ego-kiro" '#{pane_current_path}' | grep -qx "$TMP"
-"$ROOT/bin/ego" controllers | grep 'alpha--ego-kiro' | grep -q $'alpha\tyes\tlive'
+"$ROOT/bin/ego" list --controllers | grep 'alpha--ego-kiro' | grep -q $'alpha\tyes\tlive'
 "$ROOT/bin/ego" context | grep -q "Sandro's Ego context"
-"$ROOT/bin/ego" session-start | grep -q "Sandro's Ego context"
-# A controller pane is a controller, never also a worker record: registering one
+# A controller pane is a controller, never also a worker record: onboarding one
 # as a worker is undone by the next scan.
-"$ROOT/bin/ego" register alpha:ego-kiro >/dev/null
+"$ROOT/bin/ego" onboard alpha:ego-kiro >/dev/null
 grep -q '^active=yes$' "$EGO_HOME/agents/alpha--ego-kiro/meta"
-"$ROOT/bin/ego" scan >/dev/null
+"$ROOT/bin/ego" context >/dev/null
 grep -q '^active=no$' "$EGO_HOME/agents/alpha--ego-kiro/meta"
 if "$ROOT/bin/ego" list active | grep -q 'alpha--ego-kiro'; then
   printf 'a controller pane stayed in the active worker list\n' >&2
@@ -366,7 +421,7 @@ fi
 test -n "$(find "$EGO_HOME/watch" -name '*.cursor' -print -quit)"
 
 # A live pane whose agent has exited is recorded as having no process.
-"$ROOT/bin/ego" scan >/dev/null
+"$ROOT/bin/ego" context >/dev/null
 grep -q '^process=yes$' "$EGO_HOME/agents/alpha--optimizer/meta"
 grep -q '^process=no$' "$EGO_HOME/agents/alpha--three/meta"
 "$ROOT/bin/ego" list | head -1 | grep -q $'STATE\tPROCESS\tAGENT'
@@ -375,12 +430,11 @@ grep -q '^process=no$' "$EGO_HOME/agents/alpha--three/meta"
 "$ROOT/bin/ego" list --stale | grep 'alpha--three' | grep -q $'no agent process\talpha:three\ttmux kill-window -t @'
 # A scan that changes nothing leaves no event.
 scans_before=$(grep -c $'\tscan\t' "$EGO_HOME/events.log")
-"$ROOT/bin/ego" scan >/dev/null
+"$ROOT/bin/ego" context >/dev/null
 test "$(grep -c $'\tscan\t' "$EGO_HOME/events.log")" -eq "$scans_before"
 
 tmux -L "$SOCKET" kill-session -t beta
-# archive-workspace is the older name for retiring every agent in a workspace.
-"$ROOT/bin/ego" archive-workspace beta | grep -q '^retired 1 agent records in workspace beta$'
+"$ROOT/bin/ego" retire beta: | grep -q '^retired 1 agent records in workspace beta$'
 grep -q '^active=no$' "$EGO_HOME/agents/beta--agent-two/meta"
 if "$ROOT/bin/ego" context | grep -q '^beta'; then
   printf 'a workspace with no live session remained in active context\n' >&2
@@ -389,10 +443,10 @@ fi
 
 # A pane id is never reused, so a scan retires the record of a pane that is gone.
 tmux -L "$SOCKET" new-window -d -t alpha: -n agent-transient -c "$TMP"
-"$ROOT/bin/ego" register alpha:agent-transient --agent kiro >/dev/null
+"$ROOT/bin/ego" onboard alpha:agent-transient --agent kiro >/dev/null
 grep -q '^active=yes$' "$EGO_HOME/agents/alpha--agent-transient/meta"
 tmux -L "$SOCKET" kill-window -t alpha:agent-transient
-"$ROOT/bin/ego" scan | grep -q 'retired [1-9]'
+"$ROOT/bin/ego" context >/dev/null
 grep -q '^active=no$' "$EGO_HOME/agents/alpha--agent-transient/meta"
 grep -q '^last_seen=' "$EGO_HOME/agents/alpha--agent-transient/meta"
 "$ROOT/bin/ego" list | grep 'alpha--agent-transient' | grep -q 'missing'
@@ -403,7 +457,7 @@ fi
 
 # A context read joins tmux first, so a dead pane leaves context without a scan.
 tmux -L "$SOCKET" new-window -d -t alpha: -n agent-ctx -c "$TMP"
-"$ROOT/bin/ego" register alpha:agent-ctx --agent kiro >/dev/null
+"$ROOT/bin/ego" onboard alpha:agent-ctx --agent kiro >/dev/null
 tmux -L "$SOCKET" kill-window -t alpha:agent-ctx
 if "$ROOT/bin/ego" context | grep -q 'alpha--agent-ctx'; then
   printf 'context showed an agent whose pane is gone\n' >&2
@@ -411,49 +465,56 @@ if "$ROOT/bin/ego" context | grep -q 'alpha--agent-ctx'; then
 fi
 grep -q '^active=no$' "$EGO_HOME/agents/alpha--agent-ctx/meta"
 
-# retire marks one record inactive, and only purge removes it. forget is the
-# older name for both.
+# retire marks one record inactive, and only retire --purge removes it.
 "$ROOT/bin/ego" retire alpha--agent-transient | grep -q 'already retired'
-"$ROOT/bin/ego" forget alpha--agent-transient | grep -q 'already retired'
-"$ROOT/bin/ego" purge alpha--agent-transient >/dev/null
+"$ROOT/bin/ego" retire --purge alpha--agent-transient | grep -q '^purged the record for alpha--agent-transient$'
 test ! -d "$EGO_HOME/agents/alpha--agent-transient"
-"$ROOT/bin/ego" forget alpha--agent-ctx --purge >/dev/null
+grep -q $'\tpurged\talpha--agent-transient\t' "$EGO_HOME/events.log"
+"$ROOT/bin/ego" retire alpha:agent-ctx --purge >/dev/null
 test ! -d "$EGO_HOME/agents/alpha--agent-ctx"
-if "$ROOT/bin/ego" purge alpha--optimizer >/dev/null 2>&1; then
-  printf 'purge removed an agent with a live pane\n' >&2
+if "$ROOT/bin/ego" retire --purge alpha--optimizer >/dev/null 2>&1; then
+  printf 'retire --purge removed an agent with a live pane\n' >&2
   exit 1
 fi
+test -f "$EGO_HOME/agents/alpha--optimizer/meta"
+for bad_purge in "--purge alpha:" "--purge --stale" "--purge" "--purge --controller alpha--ego-kiro"; do
+  # shellcheck disable=SC2086
+  if "$ROOT/bin/ego" retire $bad_purge >/dev/null 2>&1; then
+    printf 'retire accepted %s\n' "$bad_purge" >&2
+    exit 1
+  fi
+done
 "$ROOT/bin/ego" retire alpha:optimizer | grep -q '^retired alpha--optimizer'
 grep -q '^active=no$' "$EGO_HOME/agents/alpha--optimizer/meta"
-"$ROOT/bin/ego" scan >/dev/null
+"$ROOT/bin/ego" context >/dev/null
 grep -q '^active=no$' "$EGO_HOME/agents/alpha--optimizer/meta"
-"$ROOT/bin/ego" register alpha:optimizer >/dev/null
+"$ROOT/bin/ego" onboard alpha:optimizer >/dev/null
 grep -q '^active=yes$' "$EGO_HOME/agents/alpha--optimizer/meta"
-# register without --agent must not overwrite the detected agent type
+# onboard without --agent must not overwrite the detected agent type
 grep -q '^agent=codex$' "$EGO_HOME/agents/alpha--optimizer/meta"
 
 # A killed session keeps its workspace record while the directory survives.
 mkdir -p "$TMP/delta"
 tmux -L "$SOCKET" new-session -d -s delta -c "$TMP/delta" -n base
-"$ROOT/bin/ego" scan >/dev/null
+"$ROOT/bin/ego" context >/dev/null
 grep -q '^live=yes$' "$EGO_HOME/workspaces/delta/meta"
 tmux -L "$SOCKET" kill-session -t delta
-"$ROOT/bin/ego" scan >/dev/null
+"$ROOT/bin/ego" context >/dev/null
 grep -q '^live=no$' "$EGO_HOME/workspaces/delta/meta"
 if "$ROOT/bin/ego" context | grep -q '^delta'; then
   printf 'a workspace with no live session stayed in active context\n' >&2
   exit 1
 fi
 "$ROOT/bin/ego" list --workspaces | grep -q $'^delta\tprimary\tno\t'
-# retire --stale takes every cleanup candidate, and prune is its older name.
+# retire --stale takes every cleanup candidate.
 "$ROOT/bin/ego" retire --stale | grep -q '^retired [0-9]* stale agent records$'
-"$ROOT/bin/ego" prune | grep -q '^retired 0 stale agent records$'
+"$ROOT/bin/ego" retire --stale | grep -q '^retired 0 stale agent records$'
 # Retiring a workspace's agents is not undone by a later scan.
 tmux -L "$SOCKET" new-window -d -t gamma: -n agent-gamma -c "$TMP"
-"$ROOT/bin/ego" scan >/dev/null
+"$ROOT/bin/ego" context >/dev/null
 grep -q '^active=yes$' "$EGO_HOME/agents/gamma--agent-gamma/meta"
 "$ROOT/bin/ego" retire gamma: >/dev/null
-"$ROOT/bin/ego" scan >/dev/null
+"$ROOT/bin/ego" context >/dev/null
 grep -q '^active=no$' "$EGO_HOME/agents/gamma--agent-gamma/meta"
 
 # Each controller has its own record, so starting one changes nothing about
@@ -543,9 +604,6 @@ if EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" reset zeta--ego >/dev/null 2>&
   printf 'a controller reset another controller\n' >&2
   exit 1
 fi
-# checkpoint and stow remain as older names.
-"$ROOT/bin/ego" stow zeta --summary "older name" >/dev/null
-grep -q '^Mode: stow$' "$EGO_HOME/workspaces/zeta/checkpoint.md"
 # start --continue resumes through the same launch script.
 PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" start --session zeta --window ego-resumed --continue 2>/dev/null \
   | grep -q 'started Ego zeta--ego-resumed'
@@ -561,13 +619,13 @@ if EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" spawn intruder --session alpha
   exit 1
 fi
 test ! -d "$EGO_HOME/agents/alpha--intruder"
-if EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" checkpoint alpha --summary out-of-scope >/dev/null 2>&1; then
-  printf 'a session-scoped controller checkpointed another workspace\n' >&2
+if EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" handoff alpha: --summary out-of-scope >/dev/null 2>&1; then
+  printf 'a session-scoped controller handed off another workspace\n' >&2
   exit 1
 fi
-# A refused register leaves no record behind.
-if EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" register alpha:base >/dev/null 2>&1; then
-  printf 'a session-scoped controller registered a window elsewhere\n' >&2
+# A refused onboard leaves no record behind.
+if EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" onboard alpha:base >/dev/null 2>&1; then
+  printf 'a session-scoped controller onboarded a window elsewhere\n' >&2
   exit 1
 fi
 test ! -d "$EGO_HOME/agents/alpha--base"
@@ -577,7 +635,7 @@ if EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" send beta--agent-two hello >/dev/nu
   exit 1
 fi
 EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" report alpha--three note "self report is exempt" >/dev/null
-# A worker reports, reads, and acknowledges only for itself, and its own id is
+# A worker reports and reads its inbox only for itself, and its own id is
 # implied.
 EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" report note "implied id" | grep -q '^recorded note for alpha--three$'
 grep -q $'\tnote\timplied id$' "$EGO_HOME/agents/alpha--three/status.log"
@@ -589,6 +647,11 @@ if grep -q 'impersonated' "$EGO_HOME/events.log"; then
   printf 'a refused report still reached the event log\n' >&2
   exit 1
 fi
+EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" inbox | grep -q '^No pending messages\.$'
+three_message=$("$ROOT/bin/ego" send alpha--three "worker instruction" | awk '{ print $2 }')
+inbox_output=$(EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" inbox)
+printf '%s\n' "$inbox_output" | grep -q "^MESSAGE $three_message$"
+test -f "$EGO_HOME/agents/alpha--three/inbox/handled/$three_message.msg"
 EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" inbox | grep -q '^No pending messages\.$'
 if EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" inbox alpha--agent-one >/dev/null 2>&1; then
   printf 'a worker read another agent inbox\n' >&2
@@ -618,6 +681,11 @@ printf '%s\n' "$worker_context" | grep -q '^## How to report$'
 printf '%s\n' "$worker_context" | grep -q 'report alpha--three <working|idle|blocked|needs-decision|done|failed|note> <message>$'
 printf '%s\n' "$worker_context" | grep -q '^test worker$'
 printf '%s\n' "$worker_context" | grep -q '^## Other agents in this workspace$'
+printf '%s\n' "$worker_context" | grep -q 'Reading them marks them handled:$'
+if printf '%s\n' "$worker_context" | grep -qw 'ack'; then
+  printf 'the worker contract still asks for an acknowledgement\n' >&2
+  exit 1
+fi
 if EGO_AGENT_ID=alpha--three "$ROOT/bin/ego" context --agent alpha--agent-one >/dev/null 2>&1; then
   printf 'a worker read another worker context\n' >&2
   exit 1
@@ -635,24 +703,18 @@ if EGO_CONTROLLER_ID=epsilon--ego PATH="$TMP/fake-bin:$PATH" "$ROOT/bin/ego" sta
   exit 1
 fi
 
-# Promotion is a field write, not a restart.
-# promote is the older name: it lists every session live right now.
-if EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" promote >/dev/null 2>&1; then
-  printf 'a controller promoted itself\n' >&2
-  exit 1
-fi
-"$ROOT/bin/ego" promote epsilon--ego | grep -q 'now covers .*alpha'
-grep -q '^scope=.*alpha' "$EGO_HOME/controllers/epsilon--ego/meta"
+# Widening a scope is a field write, not a restart.
+"$ROOT/bin/ego" scope epsilon--ego +alpha 2>/dev/null | grep -q 'now covers epsilon, alpha$'
 EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" context | grep -q '^Scope: sessions '
 EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" peek alpha--agent-one >/dev/null
-"$ROOT/bin/ego" promote epsilon--ego --scope session >/dev/null
+"$ROOT/bin/ego" scope epsilon--ego epsilon >/dev/null
 grep -q '^scope=epsilon$' "$EGO_HOME/controllers/epsilon--ego/meta"
 
 # Events carry a session, so a session-scoped controller wakes only for its own.
 EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" watch 0 >/dev/null
 "$ROOT/bin/ego" report alpha--agent-one blocked "another workspace is stuck" >/dev/null
 EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" watch 0 | grep -q '^No actionable events within 0 seconds\.$'
-"$ROOT/bin/ego" handoff-workspace epsilon --summary "epsilon needs supervision" >/dev/null
+"$ROOT/bin/ego" handoff epsilon: --summary "epsilon needs supervision" >/dev/null
 EGO_CONTROLLER_ID=epsilon--ego "$ROOT/bin/ego" watch 0 | grep -q 'epsilon needs supervision'
 grep -q $'\tworkspace-handoff\tepsilon\tepsilon needs supervision\tepsilon$' "$EGO_HOME/events.log"
 grep -q $'\tscan\tfleet\t.*\t$' "$EGO_HOME/events.log"
@@ -660,10 +722,10 @@ grep -q $'\tscan\tfleet\t.*\t$' "$EGO_HOME/events.log"
 # Retiring a controller record drops its event cursor.
 test -f "$EGO_HOME/watch/epsilon--ego.cursor"
 tmux -L "$SOCKET" kill-session -t epsilon
-"$ROOT/bin/ego" scan >/dev/null
+"$ROOT/bin/ego" context >/dev/null
 grep -q '^active=no$' "$EGO_HOME/controllers/epsilon--ego/meta"
 test ! -f "$EGO_HOME/watch/epsilon--ego.cursor"
-"$ROOT/bin/ego" controllers | grep 'epsilon--ego' | grep -q $'no\tmissing'
+"$ROOT/bin/ego" list --controllers | grep 'epsilon--ego' | grep -q $'no\tmissing'
 
 # A controller.meta from before controllers had records is migrated once.
 rm -rf "$TMP/legacy"
@@ -673,13 +735,13 @@ legacy_pane=$(tmux -L "$SOCKET" list-panes -t alpha:legacy-ego -F '#{pane_id}')
 {
   printf 'session=alpha\nwindow=legacy-ego\npane_id=%s\nscope=session\nstarted_at=x\n' "$legacy_pane"
 } > "$TMP/legacy/state/controller.meta"
-EGO_HOME="$TMP/legacy/state" "$ROOT/bin/ego" init >/dev/null
+EGO_HOME="$TMP/legacy/state" "$ROOT/bin/ego" list >/dev/null
 grep -q '^scope=session$' "$TMP/legacy/state/controllers/alpha--legacy-ego/meta"
 grep -q "^pane_id=$legacy_pane\$" "$TMP/legacy/state/controllers/alpha--legacy-ego/meta"
 test -f "$TMP/legacy/state/controller.meta"
 # Migration runs once, so a later scope change is not reverted.
 EGO_HOME="$TMP/legacy/state" "$ROOT/bin/ego" scope alpha--legacy-ego alpha,zeta >/dev/null
-EGO_HOME="$TMP/legacy/state" "$ROOT/bin/ego" init >/dev/null
+EGO_HOME="$TMP/legacy/state" "$ROOT/bin/ego" list >/dev/null
 grep -q '^scope=alpha,zeta$' "$TMP/legacy/state/controllers/alpha--legacy-ego/meta"
 
 # A pane id is unique only within one tmux server's lifetime. A restarted server
@@ -703,7 +765,7 @@ export EGO_HOME="$TMP/restart/state"
 restart_server old agent-old
 tmux -L "$SOCKET" set-option -g @workspace_primary "$TMP"
 tmux -L "$SOCKET" new-window -d -t old: -n agent-legacy -c "$TMP"
-"$ROOT/bin/ego" scan >/dev/null
+"$ROOT/bin/ego" context >/dev/null
 old_pane=$(tmux -L "$SOCKET" list-panes -t old:agent-old -F '#{pane_id}')
 grep -q '^server_started=[0-9]' "$EGO_HOME/agents/old--agent-old/meta"
 # A record written before the server stamp existed is judged by its age.
@@ -719,12 +781,13 @@ tmux -L "$SOCKET" set-option -g @workspace_primary "$TMP"
 tmux -L "$SOCKET" new-window -d -t new: -n agent-new2 -c "$TMP"
 tmux -L "$SOCKET" new-window -d -t new: -n plain -c "$TMP"
 test "$(tmux -L "$SOCKET" list-panes -t new:agent-new -F '#{pane_id}')" = "$old_pane"
-"$ROOT/bin/ego" controllers | grep 'old--ego' | grep -q $'yes\tmissing'
-if "$ROOT/bin/ego" peek old--agent-old >/dev/null 2>&1; then
+"$ROOT/bin/ego" list --controllers | grep 'old--ego' | grep -q $'yes\tmissing'
+if "$ROOT/bin/ego" peek old--agent-old | grep -q 'pane lines:$'; then
   printf 'peek reached a pane that only shares an id with the recorded one\n' >&2
   exit 1
 fi
-"$ROOT/bin/ego" scan >/dev/null
+"$ROOT/bin/ego" peek old--agent-old | grep -q '^Pane: gone$'
+"$ROOT/bin/ego" context >/dev/null
 grep -q '^active=no$' "$EGO_HOME/agents/old--agent-old/meta"
 grep -q '^session=old$' "$EGO_HOME/agents/old--agent-old/meta"
 grep -q '^active=no$' "$EGO_HOME/agents/old--agent-legacy/meta"
@@ -739,7 +802,7 @@ TMUX="$socket_path,1,0" TMUX_PANE="$controller_pane" "$ROOT/bin/ego" context | g
 tmux -L "$SOCKET" new-window -d -t new: -n agent-new3 -c "$TMP"
 new3_index=$(tmux -L "$SOCKET" display-message -p -t new:agent-new3 '#{pane_index}')
 mkdir -p "$EGO_HOME/agents/new--agent-new3" "$EGO_HOME/agents/new--agent-new3--p$new3_index"
-"$ROOT/bin/ego" scan >/dev/null
+"$ROOT/bin/ego" context >/dev/null
 grep -q '^window=agent-new3$' "$EGO_HOME/agents/new--agent-new3--p$new3_index-2/meta"
 test ! -f "$EGO_HOME/agents/new--agent-new3/meta"
 

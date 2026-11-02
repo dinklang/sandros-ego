@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Live supervision check: spawn a real agent through Ego, then verify that
-# scan detects it, peek reads its pane, and send lands an inbox notice in it.
+# context detects it, peek reads its pane, and send lands an inbox notice in it.
 #
 # Usage: tests/integration-agents.sh [--strict] [--keep] [kiro] [claude] [codex]
 #
 # Runs against real agent CLIs on an isolated tmux socket and EGO_HOME, so it
 # needs the agents installed and authenticated. Default checks stop at the
 # notice being visible in the pane. --strict also waits for the worker to react
-# (ack the message or write a report), which depends on the agent being allowed
+# (read its inbox or write a report), which depends on the agent being allowed
 # to run shell commands without a permission prompt. --keep leaves the tmux
 # server and state directory in place for inspection.
 set -eu
@@ -132,21 +132,21 @@ run_agent() {
     return
   fi
 
-  "$EGO" scan >/dev/null
+  "$EGO" context >/dev/null
   if grep -q "^agent=$agent\$" "$dir/meta"; then
-    pass "scan records agent=$agent"
+    pass "context records agent=$agent"
   else
-    fail "scan recorded $(grep '^agent=' "$dir/meta")"
+    fail "context recorded $(grep '^agent=' "$dir/meta")"
   fi
 
-  if [ "$("$EGO" peek "$id" 40 | grep -c .)" -gt 0 ]; then
+  if "$EGO" peek "$id" 40 | grep -q '^Last 40 pane lines:$'; then
     pass "peek returns pane content"
   else
     fail "peek returned nothing"
   fi
 
   local message
-  message=$("$EGO" send "$id" "Integration check: read this inbox message, ack it, then report idle with the message PONG." | awk '{ print $2 }')
+  message=$("$EGO" send "$id" "Integration check: read this inbox message, then report idle with the message PONG." | awk '{ print $2 }')
   if wait_for "$NOTICE_TIMEOUT" pane_has "$id" "EGO_INBOX: message $message"; then
     pass "send notice visible in pane"
   else
@@ -155,10 +155,10 @@ run_agent() {
 
   if [ "$STRICT" -eq 1 ]; then
     if wait_for "$REACT_TIMEOUT" reacted "$dir"; then
-      pass "worker reacted (ack or report)"
+      pass "worker reacted (inbox read or report)"
       [ ! -s "$dir/status.log" ] || tail -n 1 "$dir/status.log" | sed 's/^/    | /'
     else
-      fail "worker did not ack or report within ${REACT_TIMEOUT}s"
+      fail "worker did not read its inbox or report within ${REACT_TIMEOUT}s"
       "$EGO" peek "$id" 15 | sed 's/^/    | /'
     fi
   fi
@@ -169,7 +169,6 @@ mkdir -p "$TMP/ws"
 # would break agents launched from a sandboxed shell.
 env -u SANDBOX_SESSION_ID -u AWS_CONFIG_FILE -u AWS_SHARED_CREDENTIALS_FILE -u KIRO_ENABLED_FEATURES \
   tmux -L "$SOCKET" new-session -d -s "$SESSION" -n base -c "$TMP/ws" -x 200 -y 50
-"$EGO" init >/dev/null
 
 for agent in "${AGENTS[@]}"; do
   run_agent "$agent"

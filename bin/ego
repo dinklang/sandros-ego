@@ -48,42 +48,33 @@ Workers:
   ego context [--agent <id>]
   ego report [<id>] <working|idle|blocked|needs-decision|done|failed|note> <message...>
   ego inbox [<id>]
-  ego ack [<id>] <message-id>
 
 Controllers:
   ego context [--session <session>] [--all] [--full]
   ego watch [seconds] [--all]
   ego list [active] [--session <session>] [--stale|--controllers|--workspaces]
-  ego inspect <target> [lines]
-  ego peek <id> [lines]
+  ego peek <target> [lines]
   ego send <id> <message...>
   ego press <id> <enter|escape|y|n|p>
   ego spawn <name> [--session <session>] [--root <path>] [--id <id>]
                          [--brief <text>] [--agent <codex|claude|kiro>]
                          [--worktree] [--branch <name>]
                          [--command <shell-command>]
-  ego onboard <target>          ego offboard <id|session:window>
+  ego onboard <target> [--id <id>] [--root <path>] [--agent <type>]
+  ego onboard <target> --off
   ego handoff <target> --summary <text> [--next <text>]
   ego handback <target>
   ego reset [--note <text>]
-  ego retire <target> | --stale [--session <session>] | --controller <id>
+  ego retire <target> | --purge <id> | --stale [--session <session>]
+             | --controller <id>
 
 Sandro:
-  ego install
   ego start [--session <session>] [--window <name>] [--agent <codex|claude|kiro>]
                          [--scope <session,...>] [--continue]
   ego reset <controller-id> [--note <text>]
   ego scope [<controller-id>] [<session,...>|+<session>|-<session>]
-  ego scan
-  ego register <window|session:window> [--id <id>] [--root <path>]
-                         [--agent <type>]
-  ego purge <id>
 
-Older names: takeback (handback), handoff-workspace, takeback-workspace, and
-onboard-workspace (the session: target), session-start and recover (context,
-context --full), forget, prune, and archive-workspace (retire, purge),
-controllers and workspaces (list), promote (scope), checkpoint and stow
-(reset --note), init.
+Install or update Ego with ./install.sh from its repository.
 
 Environment:
   EGO_ROOT          Installation root. Default: ~/.ego
@@ -101,7 +92,7 @@ EOF
 
 command_usage() {
   case "$1" in
-    handoff|handoff-workspace)
+    handoff)
       cat <<'EOF'
 Usage: ego handoff <target> [--session <session>] --summary <text> [--next <text>]
 
@@ -109,29 +100,46 @@ Give Ego continuing supervision responsibility for one worker, or for every
 active worker in a workspace with a session: target. The command does not
 restart or steer the worker. --summary is required; --next is optional. The
 note also records each worker's live state: latest report, agent process,
-screen observation, pending inbox, and the last 20 pane lines.
+screen observation, unread inbox, and the last 20 pane lines.
 EOF
       ;;
-    handback|takeback|takeback-workspace)
+    handback)
       cat <<'EOF'
 Usage: ego handback <target> [--session <session>]
 
 Return supervision responsibility to Sandro for one worker, or for every active
 worker in a workspace with a session: target. Reporting stays enabled. The
-command prints the worker's latest durable report when one exists. takeback is
-the older name.
+command prints the worker's latest durable report when one exists.
 EOF
       ;;
-    onboard|onboard-workspace|offboard)
+    onboard)
       cat <<'EOF'
-Usage: ego onboard <target>
-       ego offboard <id|session:window>
+Usage: ego onboard <target> [--id <id>] [--root <path>] [--agent <type>]
+       ego onboard <target> --off
 
 onboard sends the reporting and inbox contract to an agent and sets
-reporting=on, registering the window first when Ego has no record of it. A
-session: target onboards every active agent in that workspace that does not
-report yet. offboard withdraws the contract and sets reporting=off. Neither
-changes ownership.
+reporting=on. A window Ego has no record of is registered first, and a retired
+record returns to active context. --id names a new record, --root sets its
+workspace directory, and --agent sets its agent type; any of them refreshes the
+record for that window. A session: target onboards every active agent in that
+workspace that does not report yet. --off withdraws the contract and sets
+reporting=off, keeping the record. Neither changes ownership.
+EOF
+      ;;
+    peek)
+      cat <<'EOF'
+Usage: ego peek <target> [lines]
+
+What a controller checks before acting on an agent: its handoff note while Ego
+owns it, its latest report, and the last pane lines, 60 by default.
+EOF
+      ;;
+    inbox)
+      cat <<'EOF'
+Usage: ego inbox [<id>]
+
+Print an agent's pending instructions and mark them handled. A worker leaves
+out its own id.
 EOF
       ;;
     spawn)
@@ -177,34 +185,30 @@ EOF
       cat <<'EOF'
 Usage: ego press <id> <enter|escape|y|n|p>
 
-Send one allowed key to a worker's live terminal UI. Inspect the pane first.
+Send one allowed key to a worker's live terminal UI. Peek at the pane first.
 Use this for an explicit interactive prompt, never for a worker instruction.
 EOF
       ;;
-    retire|forget|prune|archive-workspace)
+    retire)
       cat <<'EOF'
 Usage: ego retire <id|session:window>
        ego retire <session>:
+       ego retire --purge <id|session:window>
        ego retire --stale [--session <session>]
        ego retire --controller <id>
 
 Mark records inactive so they leave context. A target names one agent, a
 trailing colon names every agent in a workspace, --stale takes every cleanup
 candidate in scope ('ego list --stale'), and --controller takes a controller
-record. Records stay on disk; 'register' or 'spawn' brings an agent back.
-Nothing here closes a tmux window or touches a worktree. forget, prune, and
-archive-workspace are older names.
-EOF
-      ;;
-    purge)
-      cat <<'EOF'
-Usage: ego purge <id>
+record. Records stay on disk; 'onboard' or 'spawn' brings an agent back.
+Nothing here closes a tmux window or touches a worktree.
 
-Remove one agent's record directory, including its brief, handoff, status log,
-and inbox. Refuses while the pane is still live. The only delete in Ego.
+--purge removes one agent's record directory instead, including its brief,
+handoff, status log, and inbox. It refuses while the pane is still live and is
+the only delete in Ego.
 EOF
       ;;
-    list|controllers|workspaces)
+    list)
       cat <<'EOF'
 Usage: ego list [active] [--session <session>]
        ego list --stale [--session <session>]
@@ -216,7 +220,7 @@ candidates with a reason and the tmux command that would close each window.
 --controllers and --workspaces list those records instead.
 EOF
       ;;
-    context|session-start)
+    context)
       cat <<'EOF'
 Usage: ego context [--session <session>] [--all] [--full]
 
@@ -224,10 +228,10 @@ Scan tmux, then print startup context for the sessions the calling
 controller's scope lists, its own session by default. --session narrows to one
 session, --all forces the whole server, and --full adds the recovery view:
 workspace records whose session is gone, their latest checkpoint, and each
-agent's endpoint. session-start and recover are older names.
+agent's endpoint.
 EOF
       ;;
-    scope|promote)
+    scope)
       cat <<'EOF'
 Usage: ego scope
        ego scope <session,...>|+<session>|-<session>
@@ -237,8 +241,7 @@ Show or change which sessions a controller covers, without restarting it. A
 controller covers its own session by default. A list replaces the scope, +A
 adds a session, and -A removes one. With one argument the calling controller
 is changed; name the controller first to change another. A controller that
-spawns into a new session gets it added. promote is the older name: it lists
-every session live right now, and 'promote --scope session' narrows back.
+spawns into a new session gets it added.
 EOF
       ;;
     *)
@@ -247,27 +250,15 @@ EOF
   esac
 }
 
-cmd_install() {
-  local install_dir=${EGO_INSTALL_DIR:-$EGO_ROOT/bin}
-  local controller_guide=${EGO_CONTROLLER_GUIDE:-$EGO_ROOT/CONTROLLER.md}
-  local root_tmp
-  mkdir -p "$install_dir" "$(dirname "$controller_guide")"
-  install -m 755 "$REPO_ROOT/bin/ego" "$install_dir/ego"
-  install -m 644 "$REPO_ROOT/CONTROLLER.md" "$controller_guide"
-  root_tmp=$(mktemp "$install_dir/.repo-root.XXXXXX")
-  printf '%s\n' "$REPO_ROOT" > "$root_tmp"
-  mv "$root_tmp" "$install_dir/repo-root"
-  printf 'installed Ego at %s\n' "$install_dir/ego"
-}
-
 # The installed copy is deliberately separate from the repository, so an
 # uncommitted edit never goes live on its own. Installing is automatic only the
-# first time, when there is no installed copy at all.
+# first time, when there is no installed copy at all, and goes through the same
+# install.sh Sandro runs by hand.
 ensure_installed() {
   local install_dir=${EGO_INSTALL_DIR:-$EGO_ROOT/bin}
   if [ ! -x "$install_dir/ego" ]; then
-    [ -f "$REPO_ROOT/bin/ego" ] && [ -f "$REPO_ROOT/CONTROLLER.md" ] || return 0
-    cmd_install >&2
+    [ -f "$REPO_ROOT/install.sh" ] && [ -f "$REPO_ROOT/bin/ego" ] && [ -f "$REPO_ROOT/CONTROLLER.md" ] || return 0
+    EGO_ROOT=$EGO_ROOT bash "$REPO_ROOT/install.sh" >&2
   fi
   prefer_installed_cli
 }
@@ -280,14 +271,14 @@ prefer_installed_cli() {
 }
 
 # Warn when the running installed copy no longer matches its repository, which
-# means repository changes are waiting for 'ego install'.
+# means repository changes are waiting for install.sh.
 warn_if_drifted() {
   local install_dir=${EGO_INSTALL_DIR:-$EGO_ROOT/bin} guide=${EGO_CONTROLLER_GUIDE:-$EGO_ROOT/CONTROLLER.md}
   [ "$SCRIPT_DIR" = "$(cd "$install_dir" 2>/dev/null && pwd)" ] || return 0
   [ -f "$REPO_ROOT/bin/ego" ] || return 0
   if ! cmp -s "$REPO_ROOT/bin/ego" "$install_dir/ego" \
     || { [ -f "$REPO_ROOT/CONTROLLER.md" ] && ! cmp -s "$REPO_ROOT/CONTROLLER.md" "$guide"; }; then
-    printf "warning: installed Ego differs from %s; run 'ego install' to update it\n" "$REPO_ROOT" >&2
+    printf "warning: installed Ego differs from %s; run ./install.sh there to update it\n" "$REPO_ROOT" >&2
   fi
   return 0
 }
@@ -459,7 +450,7 @@ record_agent() {
     worktree=$(meta_get "$meta" worktree)
     branch=$(meta_get "$meta" branch)
     origin=$(meta_get "$meta" origin)
-    # Retirement is deliberate, so a refresh preserves it. Only 'register' and
+    # Retirement is deliberate, so a refresh preserves it. Only 'onboard' and
     # 'spawn' put a record back into active context.
     active=$(meta_get "$meta" active)
     [ -n "$active" ] || active=yes
@@ -521,13 +512,14 @@ register_target() {
 agent_meta() {
   local id=$1 meta
   meta="$AGENTS_DIR/$id/meta"
-  [ -f "$meta" ] || die "unknown agent '$id'; run 'ego scan' or 'ego register' first"
+  [ -f "$meta" ] || die "unknown agent '$id'; run 'ego context' or 'ego onboard' first"
   printf '%s\n' "$meta"
 }
 
 # Mark one agent record inactive. Returns 1 when it already was, so callers can
 # count only the records this pass actually changed. Records are never deleted
-# here: 'ego recover' must still be able to read a retired worker's history.
+# here: 'ego context --full' must still be able to read a retired worker's
+# history.
 retire_agent_record() {
   local meta=$1
   [ "$(meta_get "$meta" active)" != no ] || return 1
@@ -729,11 +721,11 @@ role_allows() {
   case "$role" in
     human) return 0 ;;
     controller)
-      case "$command" in install|start) return 1 ;; *) return 0 ;; esac
+      case "$command" in start) return 1 ;; *) return 0 ;; esac
       ;;
     worker)
       case "$command" in
-        report|inbox|ack|context|status|session-start|list|peek) return 0 ;;
+        report|inbox|context|list|peek) return 0 ;;
         *) return 1 ;;
       esac
       ;;
@@ -1028,36 +1020,6 @@ record_live_pane() {
   printf '%s\n' "$pane"
 }
 
-cmd_init() {
-  ensure_home
-  printf 'initialized %s\n' "$EGO_HOME"
-}
-
-cmd_register() {
-  [ $# -ge 1 ] || die "register requires a tmux window"
-  local selector=$1 id= root= agent=
-  shift
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --id) [ $# -ge 2 ] || die "--id requires a value"; id=$2; shift 2 ;;
-      --root) [ $# -ge 2 ] || die "--root requires a value"; root=$2; shift 2 ;;
-      --agent) [ $# -ge 2 ] || die "--agent requires a value"; agent=$2; shift 2 ;;
-      *) die "unknown register option '$1'" ;;
-    esac
-  done
-  # An omitted --agent must not overwrite a type Agent Navigator already
-  # detected, so the override stays empty rather than defaulting to unknown.
-  [ -z "$agent" ] || valid_agent "$agent" || die "unsupported agent type '$agent'"
-  ensure_home
-  # Pre-check the explicit session:window form so a refused register leaves no
-  # record behind. A bare window name still has to be resolved first.
-  case "$selector" in *:*) require_in_scope "${selector%%:*}" ;; esac
-  id=$(register_target "$selector" "$id" "$root" "$agent")
-  require_in_scope "$(agent_session "$id")"
-  append_event registered "$id" "$selector" "$(agent_session "$id")"
-  printf 'registered %s\n' "$id"
-}
-
 agent_navigator_path() {
   local candidate
   if [ -n "${EGO_AGENT_NAVIGATOR:-}" ]; then
@@ -1121,11 +1083,7 @@ mint_agent_id() {
 
 # Join the tmux server with the records. With strict=1 a missing or failing
 # Agent Navigator is an error; otherwise detection is skipped with a warning and
-# only liveness is updated, so a context read never fails because of it. Counts
-# land in SCAN_DETECTED, SCAN_RETIRED, and SCAN_NEW.
-SCAN_DETECTED=0
-SCAN_RETIRED=0
-SCAN_NEW=0
+# only liveness is updated, so a context read never fails because of it.
 scan_fleet() {
   local strict=${1:-1}
   local all_rows navigator= detected= row session window pane pane_index pane_pid id agent observed controllers= count=0 retired=0 adopted=0 created=0 dir meta existing_pane detected_panes= detection=1
@@ -1212,9 +1170,6 @@ scan_fleet() {
   done
   adopted=$(enforce_controller_panes)
   retired=$((retired + adopted))
-  SCAN_DETECTED=$count
-  SCAN_RETIRED=$retired
-  SCAN_NEW=$created
   # A scan that changed nothing is not news. Logging every one filled the event
   # log with routine lines once every context read began with a scan.
   if [ "$retired" -gt 0 ] || [ "$created" -gt 0 ]; then
@@ -1222,19 +1177,7 @@ scan_fleet() {
   fi
 }
 
-cmd_scan() {
-  require_tmux
-  ensure_home
-  scan_fleet 1
-  if [ "$SCAN_RETIRED" -gt 0 ]; then
-    printf 'registered or refreshed %s detected agent panes; retired %s whose pane is gone\n' "$SCAN_DETECTED" "$SCAN_RETIRED"
-  else
-    printf 'registered or refreshed %s detected agent panes\n' "$SCAN_DETECTED"
-  fi
-}
-
-
-cmd_controllers() {
+print_controller_table() {
   ensure_home
   local dir meta pane live
   printf 'ID\tSESSION\tSCOPE\tACTIVE\tSTATE\tROOT\n'
@@ -1251,20 +1194,6 @@ cmd_controllers() {
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(meta_get "$meta" id)" "$(meta_get "$meta" session)" \
       "$(meta_get "$meta" scope)" "$(meta_get "$meta" active)" "$live" "$(meta_get "$meta" root)"
   done
-}
-
-# The older name for 'ego scope'. With no --scope it widens to every session
-# live right now; --scope session narrows to the controller's own session.
-cmd_promote() {
-  local id= scope=server
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --scope) [ $# -ge 2 ] || die "--scope requires a value"; scope=$2; shift 2 ;;
-      --*) die "unknown promote option '$1'" ;;
-      *) [ -z "$id" ] || die "promote accepts one controller id"; id=$1; shift ;;
-    esac
-  done
-  if [ -n "$id" ]; then cmd_scope "$id" "$scope"; else cmd_scope "$scope"; fi
 }
 
 # Decide whether one workspace record belongs in startup context: a workspace is
@@ -1373,9 +1302,8 @@ complete, even if the broader project has a later external gate. Use blocked
 only when your assigned scope cannot proceed. Do not claim completion until the
 requested result is complete.
 
-Check instructions at natural checkpoints, and acknowledge each one you handle:
+Check instructions at natural checkpoints. Reading them marks them handled:
   $ego_cli inbox $id
-  $ego_cli ack $id <message-id>
 
 Run $ego_cli context --agent $id again whenever you lose track. Supervision
 commands such as watch, handoff, send, and press belong to your controller.
@@ -1464,8 +1392,8 @@ print_inspection() {
   fi
 }
 
-cmd_inspect() {
-  [ $# -ge 1 ] && [ $# -le 2 ] || die "inspect requires one agent and an optional line count"
+cmd_peek() {
+  [ $# -ge 1 ] && [ $# -le 2 ] || die "peek requires one agent and an optional line count"
   local id meta lines=${2:-60}
   case "$lines" in ''|*[!0-9]*) die "lines must be a positive integer" ;; esac
   id=$(resolve_agent_ref "$1") || die "unknown agent '$1'"
@@ -1497,7 +1425,7 @@ cmd_list() {
   case "$what" in
     agents) print_agent_table "$active_only" "$filter" ;;
     stale) print_stale_table "$filter" ;;
-    controllers) cmd_controllers ;;
+    controllers) print_controller_table ;;
     workspaces) print_workspace_table "$active_only" "$filter" ;;
   esac
 }
@@ -1533,7 +1461,7 @@ cmd_context() {
   fi
   warn_if_drifted
   # Every read starts from a fresh join of tmux and the records, so a dead pane
-  # never reaches context just because nobody ran 'ego scan'.
+  # never reaches context.
   if command -v tmux >/dev/null 2>&1 && tmux_cmd list-sessions >/dev/null 2>&1; then
     scan_fleet 0 >/dev/null
   fi
@@ -1595,11 +1523,11 @@ cmd_context() {
     # latest checkpoint, and each agent's endpoint.
     printf '\n'
     if [ -z "$filter" ]; then
-      cmd_recover
+      print_recovery
     else
       local recover_session
       while IFS= read -r recover_session; do
-        [ -z "$recover_session" ] || cmd_recover "$recover_session" 2>/dev/null || true
+        [ -z "$recover_session" ] || print_recovery "$recover_session" 2>/dev/null || true
       done <<< "$filter"
     fi
   fi
@@ -1610,7 +1538,7 @@ write_workspace_checkpoint() {
   id=$(clean_id "$session")
   dir="$WORKSPACES_DIR/$id"
   meta="$dir/meta"
-  [ -f "$meta" ] || die "unknown workspace '$session'; run 'ego scan' first"
+  [ -f "$meta" ] || die "unknown workspace '$session'; run 'ego context' first"
   {
     printf '# Workspace checkpoint\n\n'
     printf 'Session: %s\n' "$session"
@@ -1641,26 +1569,6 @@ parse_workspace_note() {
   [ -n "$WORKSPACE_SUMMARY" ] || die "$WORKSPACE_ACTION requires --summary"
 }
 
-cmd_checkpoint() {
-  WORKSPACE_ACTION=checkpoint
-  parse_workspace_note "$@"
-  require_in_scope "$WORKSPACE_SESSION"
-  scan_workspaces
-  write_workspace_checkpoint "$WORKSPACE_SESSION" "$WORKSPACE_SUMMARY" "$WORKSPACE_NEXT" checkpoint
-  append_event checkpoint "$WORKSPACE_SESSION" "$WORKSPACE_SUMMARY" "$WORKSPACE_SESSION"
-  printf 'checkpointed workspace %s\n' "$WORKSPACE_SESSION"
-}
-
-cmd_stow() {
-  WORKSPACE_ACTION=stow
-  parse_workspace_note "$@"
-  require_in_scope "$WORKSPACE_SESSION"
-  scan_workspaces
-  write_workspace_checkpoint "$WORKSPACE_SESSION" "$WORKSPACE_SUMMARY" "$WORKSPACE_NEXT" stow
-  append_event stow "$WORKSPACE_SESSION" "$WORKSPACE_SUMMARY" "$WORKSPACE_SESSION"
-  printf 'stowed workspace %s\n' "$WORKSPACE_SESSION"
-}
-
 # Resolve an agent reference to a record id: an id, session:window, or a bare
 # window name in the caller's own tmux session. A trailing colon names a whole
 # workspace, not an agent, so it resolves to nothing here.
@@ -1680,13 +1588,14 @@ resolve_agent_ref() {
 
 # Retire records: one agent, every agent in a workspace (session:), every
 # cleanup candidate in scope (--stale), or one controller (--controller). A
-# retired record leaves context and stays on disk; nothing here closes a window
-# or deletes a file. 'register' or 'spawn' brings an agent record back.
+# retired record leaves context and stays on disk; nothing here closes a window.
+# 'onboard' or 'spawn' brings an agent record back. --purge is the one delete.
 cmd_retire() {
-  local target= stale=0 controller= filter= id meta session dir sessions count=0
+  local target= stale=0 purge=0 controller= filter= id meta session dir sessions count=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --stale) stale=1; shift ;;
+      --purge) purge=1; shift ;;
       --controller) [ $# -ge 2 ] || die "--controller requires an id"; controller=$2; shift 2 ;;
       --session) [ $# -ge 2 ] || die "--session requires a value"; filter=$2; shift 2 ;;
       --*) die "unknown retire option '$1'" ;;
@@ -1694,6 +1603,13 @@ cmd_retire() {
     esac
   done
   ensure_home
+  if [ "$purge" -eq 1 ]; then
+    [ "$stale" -eq 0 ] && [ -z "$controller" ] && [ -z "$filter" ] \
+      || die "retire --purge takes one agent and no other option"
+    case "$target" in ''|*:) die "retire --purge takes one agent" ;; esac
+    purge_agent_record "$target"
+    return 0
+  fi
   if [ -n "$controller" ]; then
     valid_id "$controller" || die "invalid controller id '$controller'"
     meta=$(controller_meta "$controller") || die "unknown controller '$controller'; run 'ego list --controllers'"
@@ -1766,11 +1682,10 @@ cmd_retire() {
 
 # The single delete in Ego. It removes Ego's own record of an agent whose pane is
 # already gone, never a window, a directory, or a worktree.
-cmd_purge() {
-  [ $# -eq 1 ] || die "purge requires one agent id"
-  local id=$1 meta session
-  valid_id "$id" || die "invalid agent id '$id'"
-  ensure_home
+purge_agent_record() {
+  local ref=$1 id meta session
+  id=$(resolve_agent_ref "$ref") \
+    || die "unknown agent '$ref'; pass its id, session:window, or a window in this session"
   meta=$(agent_meta "$id")
   session=$(meta_get "$meta" session)
   require_in_scope "$session"
@@ -1784,10 +1699,11 @@ cmd_purge() {
 }
 
 cmd_handoff_workspace() {
-  WORKSPACE_ACTION=handoff-workspace
+  WORKSPACE_ACTION=handoff
   parse_workspace_note "$@"
   require_in_scope "$WORKSPACE_SESSION"
-  cmd_scan >/dev/null
+  ensure_home
+  scan_fleet 1 >/dev/null
   write_workspace_checkpoint "$WORKSPACE_SESSION" "$WORKSPACE_SUMMARY" "$WORKSPACE_NEXT" handoff
   local dir meta session count=0 summary_lines=
   for dir in "$AGENTS_DIR"/*; do
@@ -1819,7 +1735,7 @@ cmd_handoff_workspace() {
   [ -z "$summary_lines" ] || printf '%s' "$summary_lines"
 }
 
-cmd_recover() {
+print_recovery() {
   ensure_home
   local wanted=${1:-} dir meta session checkpoint archived_checkpoint found=0 tmux_available=0
   if command -v tmux >/dev/null 2>&1 && tmux_cmd list-sessions >/dev/null 2>&1; then
@@ -1893,7 +1809,7 @@ worker_state_section() {
     [ -f "$file" ] || continue
     pending=$((pending + 1))
   done
-  printf 'Pending inbox messages: %s\n' "$pending"
+  printf 'Unread inbox messages: %s\n' "$pending"
   if pane=$(record_live_pane "$meta"); then
     printf '\nLast %s pane lines:\n\n````text\n' "$lines"
     # Trailing blank rows are empty screen, not output.
@@ -1967,7 +1883,7 @@ cmd_handoff() {
   worker_state_section "$meta"
 }
 
-cmd_takeback() {
+cmd_handback() {
   local ref= session= id meta current=
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1980,7 +1896,7 @@ cmd_takeback() {
   case "$ref" in
     *:)
       [ -z "$session" ] || die "handback of a whole workspace takes no --session"
-      cmd_takeback_workspace "${ref%:}"
+      cmd_handback_workspace "${ref%:}"
       return
       ;;
   esac
@@ -1998,7 +1914,7 @@ cmd_takeback() {
   require_in_scope "$(meta_get "$meta" session)"
   meta_set "$meta" owner human
   meta_set "$meta" updated_at "$(now)"
-  append_event takeback "$id" "returned to Sandro" "$(meta_get "$meta" session)"
+  append_event handback "$id" "returned to Sandro" "$(meta_get "$meta" session)"
   printf 'returned %s to human control\n' "$id"
   if [ -s "${meta%/meta}/status.log" ]; then
     printf 'latest report: '
@@ -2012,11 +1928,13 @@ cmd_takeback() {
   print_inspection "$meta"
 }
 
-cmd_takeback_workspace() {
-  [ $# -eq 1 ] || die "takeback-workspace requires one session"
+cmd_handback_workspace() {
+  [ $# -eq 1 ] || die "handback requires one session"
   local wanted=$1 dir meta session count=0
   require_in_scope "$wanted"
-  cmd_scan >/dev/null
+  require_tmux
+  ensure_home
+  scan_fleet 1 >/dev/null
   for dir in "$AGENTS_DIR"/*; do
     [ -d "$dir" ] || continue
     meta="$dir/meta"
@@ -2028,7 +1946,7 @@ cmd_takeback_workspace() {
     meta_set "$meta" updated_at "$(now)"
     count=$((count + 1))
   done
-  append_event workspace-takeback "$wanted" "$count agents returned to Sandro" "$wanted"
+  append_event workspace-handback "$wanted" "$count agents returned to Sandro" "$wanted"
   printf 'returned workspace %s and %s registered agents to human control\n' "$wanted" "$count"
 }
 
@@ -2177,19 +2095,6 @@ cmd_spawn() {
   printf 'spawned %s at %s:%s\n' "$id" "$session" "$window"
 }
 
-cmd_peek() {
-  [ $# -ge 1 ] || die "peek requires an agent id"
-  local meta pane lines=${2:-80}
-  meta=$(agent_meta "$1")
-  require_in_scope "$(meta_get "$meta" session)"
-  pane=$(meta_get "$meta" pane_id)
-  [ -n "$pane" ] || die "agent '$1' has no recorded pane"
-  case "$lines" in ''|*[!0-9]*) die "lines must be a positive integer" ;; esac
-  pane=$(record_live_pane "$meta") \
-    || die "agent '$1' has no live pane; its pane is gone or now belongs to another program, so run 'ego scan'"
-  tmux_cmd capture-pane -p -t "$pane" -S "-$lines"
-}
-
 queue_message() {
   local id=$1 text=$2 meta pane dir inbox message_id tmp notice buffer ego_cli suffix=0
   prefer_installed_cli
@@ -2237,8 +2142,8 @@ cmd_send() {
   meta=$(agent_meta "$id")
   require_in_scope "$(meta_get "$meta" session)"
   message_id=$(queue_message "$id" "$text") \
-    || die "could not reach '$id'; its pane may be gone, so run 'ego scan'"
-  [ -n "$message_id" ] || die "could not reach '$id'; its pane may be gone, so run 'ego scan'"
+    || die "could not reach '$id'; its pane may be gone, so run 'ego context'"
+  [ -n "$message_id" ] || die "could not reach '$id'; its pane may be gone, so run 'ego context'"
   append_event sent "$id" "message=$message_id $text" "$(meta_get "$meta" session)"
   printf 'queued %s for %s\n' "$message_id" "$id"
 }
@@ -2267,55 +2172,77 @@ cmd_inbox() {
   id=$(self_or_named_agent "${1:-}") || exit 1
   meta=$(agent_meta "$id")
   dir=${meta%/meta}
+  mkdir -p "$dir/inbox/handled"
+  # Reading a message handles it, so a worker has nothing to acknowledge.
   for file in "$dir/inbox"/*.msg; do
     [ -f "$file" ] || continue
     found=1
     message_id=$(basename "$file" .msg)
     printf 'MESSAGE %s\n' "$message_id"
     cat "$file"
+    mv "$file" "$dir/inbox/handled/$message_id.msg"
+    append_event handled "$id" "$message_id" "$(agent_session "$id")"
   done
   [ "$found" -eq 1 ] || printf 'No pending messages.\n'
 }
 
-cmd_ack() {
-  local id meta dir message_id named=
-  case $# in
-    1) message_id=$1 ;;
-    2) named=$1; message_id=$2 ;;
-    *) die "ack requires a message id, after the agent id unless a worker is acknowledging its own" ;;
-  esac
-  case "$message_id" in ''|.*|*/*|*[!A-Za-z0-9._-]*) die "invalid message id '$message_id'" ;; esac
-  id=$(self_or_named_agent "$named") || exit 1
-  meta=$(agent_meta "$id")
-  dir=${meta%/meta}
-  [ -f "$dir/inbox/$message_id.msg" ] || die "pending message '$message_id' does not exist"
-  mkdir -p "$dir/inbox/handled"
-  mv "$dir/inbox/$message_id.msg" "$dir/inbox/handled/$message_id.msg"
-  append_event acknowledged "$id" "$message_id" "$(agent_session "$id")"
-  printf 'acknowledged %s for %s\n' "$message_id" "$id"
-}
-
 cmd_onboard() {
-  [ $# -eq 1 ] || die "onboard requires one agent, session:window, or session:"
-  local ref=$1 id meta message message_id ego_cli
-  case "$ref" in *:) cmd_onboard_workspace "${ref%:}"; return ;; esac
-  ensure_home
-  # Onboarding a window Ego has not recorded registers it first, so a window
-  # name works here the same way it does for handoff.
-  if ! id=$(resolve_agent_ref "$ref"); then
-    case "$ref" in *:*) require_in_scope "${ref%%:*}" ;; esac
-    id=$(register_target "$ref")
-    [ -n "$id" ] || die "no agent or tmux window matches '$ref'"
+  local ref= off=0 new_id= root= agent= id meta message message_id ego_cli record
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --off) off=1; shift ;;
+      --id) [ $# -ge 2 ] || die "--id requires a value"; new_id=$2; shift 2 ;;
+      --root) [ $# -ge 2 ] || die "--root requires a value"; root=$2; shift 2 ;;
+      --agent) [ $# -ge 2 ] || die "--agent requires a value"; agent=$2; shift 2 ;;
+      --*) die "unknown onboard option '$1'" ;;
+      *) [ -z "$ref" ] || die "onboard accepts one target"; ref=$1; shift ;;
+    esac
+  done
+  [ -n "$ref" ] || die "onboard requires one agent, session:window, or session:"
+  if [ "$off" -eq 1 ]; then
+    [ -z "$new_id$root$agent" ] || die "onboard --off takes no other option"
+    onboard_off "$ref"
+    return
   fi
+  case "$ref" in
+    *:)
+      [ -z "$new_id$root$agent" ] || die "onboard of a whole workspace takes no --id, --root, or --agent"
+      cmd_onboard_workspace "${ref%:}"
+      return
+      ;;
+  esac
+  # An omitted --agent must not overwrite a type Agent Navigator already
+  # detected, so the override stays empty rather than defaulting to unknown.
+  [ -z "$agent" ] || valid_agent "$agent" || die "unsupported agent type '$agent'"
+  ensure_home
+  # Pre-check the explicit session:window form so a refused onboard leaves no
+  # record behind. A bare window name still has to be resolved first.
+  case "$ref" in *:*) require_in_scope "${ref%%:*}" ;; esac
+  if id=$(resolve_agent_ref "$ref"); then
+    # An option refreshes the record from its window, under --id when given.
+    if [ -n "$new_id$root$agent" ]; then
+      record="$AGENTS_DIR/$id/meta"
+      require_in_scope "$(meta_get "$record" session)"
+      id=$(register_target "$(meta_get "$record" session):$(meta_get "$record" window)" \
+        "${new_id:-$id}" "$root" "$agent")
+    fi
+  else
+    # A window Ego has not recorded is registered first, so a window name works
+    # here the same way it does for handoff.
+    id=$(register_target "$ref" "$new_id" "$root" "$agent")
+  fi
+  [ -n "$id" ] || die "no agent or tmux window matches '$ref'"
   meta=$(agent_meta "$id")
   require_in_scope "$(meta_get "$meta" session)"
   prefer_installed_cli
   ego_cli="EGO_HOME=$(shell_quote "$EGO_HOME") $(shell_quote "$EGO_CLI_PATH")"
   message="Join Sandro's Ego reporting while keeping your current workflow. You are agent $id. Run $ego_cli context --agent $id now: it prints how to report, how to read instructions, and your workspace. Reporting stays active whether Sandro or Ego supervises you."
   message_id=$(queue_message "$id" "$message") \
-    || die "could not reach '$id'; its pane may be gone, so run 'ego scan'"
-  [ -n "$message_id" ] || die "could not reach '$id'; its pane may be gone, so run 'ego scan'"
+    || die "could not reach '$id'; its pane may be gone, so run 'ego context'"
+  [ -n "$message_id" ] || die "could not reach '$id'; its pane may be gone, so run 'ego context'"
   meta_set "$meta" reporting on
+  # Onboarding is an explicit request to track, so it reverses a retirement.
+  meta_set "$meta" active yes
   meta_set "$meta" updated_at "$(now)"
   append_event onboarded "$id" "message=$message_id" "$(meta_get "$meta" session)"
   printf 'onboarded %s with message %s\n' "$id" "$message_id"
@@ -2323,28 +2250,29 @@ cmd_onboard() {
 
 # The inverse of onboard: the agent stops calling 'ego report'. Its record,
 # owner, and history stay; only the reporting contract is withdrawn.
-cmd_offboard() {
-  [ $# -eq 1 ] || die "offboard requires one agent id or session:window"
+onboard_off() {
   local ref=$1 id meta message message_id
+  case "$ref" in *:) die "onboard --off takes one agent, not a whole workspace" ;; esac
   id=$(resolve_agent_ref "$ref") || die "unknown agent '$ref'"
   meta=$(agent_meta "$id")
   require_in_scope "$(meta_get "$meta" session)"
   message="Leave Ego's reporting protocol. Stop calling ego report and ego inbox for $id. Continue your current work as before."
   message_id=$(queue_message "$id" "$message") \
-    || die "could not reach '$id'; its pane may be gone, so run 'ego scan'"
-  [ -n "$message_id" ] || die "could not reach '$id'; its pane may be gone, so run 'ego scan'"
+    || die "could not reach '$id'; its pane may be gone, so run 'ego context'"
+  [ -n "$message_id" ] || die "could not reach '$id'; its pane may be gone, so run 'ego context'"
   meta_set "$meta" reporting off
   meta_set "$meta" updated_at "$(now)"
-  append_event offboarded "$id" "message=$message_id" "$(meta_get "$meta" session)"
-  printf 'offboarded %s with message %s\n' "$id" "$message_id"
+  append_event reporting-off "$id" "message=$message_id" "$(meta_get "$meta" session)"
+  printf 'turned reporting off for %s with message %s\n' "$id" "$message_id"
 }
 
 cmd_onboard_workspace() {
-  [ $# -eq 1 ] || die "onboard-workspace requires one session"
+  [ $# -eq 1 ] || die "onboard requires one session"
   local wanted=$1 workspace_dir workspace_meta found=0 dir meta session id pane reporting
   local onboarded=0 already=0 unavailable=0
   require_in_scope "$wanted"
-  cmd_scan >/dev/null
+  ensure_home
+  scan_fleet 1 >/dev/null
 
   for workspace_dir in "$WORKSPACES_DIR"/*; do
     [ -d "$workspace_dir" ] || continue
@@ -2482,7 +2410,7 @@ cmd_watch() {
         printf '%s\n' "$batch"
         return 0
       else
-        matched=$(printf '%s\n' "$batch" | awk -F '\t' '$2 ~ /^(handoff|workspace-handoff|takeback|workspace-takeback|blocked|needs-decision|done|failed)$/')
+        matched=$(printf '%s\n' "$batch" | awk -F '\t' '$2 ~ /^(handoff|workspace-handoff|handback|workspace-handback|blocked|needs-decision|done|failed)$/')
         if [ -n "$matched" ]; then
           printf '%s\n' "$matched"
           return 0
@@ -2602,7 +2530,7 @@ cmd_start() {
   warn_if_drifted
   guide=$CONTROLLER_GUIDE
   [ -f "$guide" ] || guide="$REPO_ROOT/CONTROLLER.md"
-  [ -f "$guide" ] || die "controller guide is missing; run 'ego install'"
+  [ -f "$guide" ] || die "controller guide is missing; run ./install.sh from the Ego repository"
   if [ -z "$session" ] && [ -n "${TMUX:-}" ]; then
     session=$(tmux_cmd display-message -p '#S')
   fi
@@ -2741,12 +2669,12 @@ if [ $# -gt 0 ]; then
 fi
 # Which role may run which command, in one place. Workers report on themselves,
 # read their own inbox, and look at their own workspace; supervision commands
-# belong to controllers and Sandro. A controller cannot start another controller
-# or install Ego, and 'scope' itself refuses to widen a controller's own scope.
-# Like scope, this prevents accidents; it is not a security boundary.
+# belong to controllers and Sandro. A controller cannot start another
+# controller, and 'scope' itself refuses to widen a controller's own scope.
+# Like scope, this prevents accidents; it is not a security boundary. An unknown
+# command skips the check and fails as unknown below.
 case "$command_name" in
-  help|-h|--help) ;;
-  *)
+  context|report|inbox|watch|list|peek|send|press|spawn|onboard|handoff|handback|reset|retire|start|scope)
     ego_role=$(caller_role)
     if ! role_allows "$ego_role" "$command_name"; then
       die "'ego $command_name' is not available to a $ego_role; ask Sandro or your controller"
@@ -2761,55 +2689,21 @@ case "$command_name" in
     if [ $# -gt 0 ]; then command_usage "$1"; else usage; fi
     ;;
   -h|--help) usage ;;
-  install) cmd_install "$@" ;;
-  init) cmd_init "$@" ;;
-  scan) cmd_scan "$@" ;;
+  context) cmd_context "$@" ;;
+  report) cmd_report "$@" ;;
+  inbox) cmd_inbox "$@" ;;
+  watch) cmd_watch "$@" ;;
   list) cmd_list "$@" ;;
-  controllers) cmd_controllers "$@" ;;
-  scope) cmd_scope "$@" ;;
-  promote) cmd_promote "$@" ;;
-  workspaces) cmd_list --workspaces "$@" ;;
-  context|status|session-start) cmd_context "$@" ;;
-  retire) cmd_retire "$@" ;;
-  purge) cmd_purge "$@" ;;
-  # Older names for retire and purge.
-  prune) cmd_retire --stale "$@" ;;
-  archive-workspace)
-    [ $# -eq 1 ] || die "archive-workspace requires one session"
-    cmd_retire "$1:"
-    ;;
-  forget)
-    forget_args=() forget_purge=0
-    for forget_arg in "$@"; do
-      if [ "$forget_arg" = --purge ]; then forget_purge=1; else forget_args+=("$forget_arg"); fi
-    done
-    if [ "$forget_purge" -eq 1 ]; then
-      cmd_purge ${forget_args[@]+"${forget_args[@]}"}
-    else
-      cmd_retire ${forget_args[@]+"${forget_args[@]}"}
-    fi
-    ;;
-  register) require_tmux; cmd_register "$@" ;;
-  spawn) cmd_spawn "$@" ;;
-  onboard) require_tmux; cmd_onboard "$@" ;;
-  onboard-workspace) require_tmux; cmd_onboard_workspace "$@" ;;
-  handoff) require_tmux; cmd_handoff "$@" ;;
-  checkpoint) require_tmux; cmd_checkpoint "$@" ;;
-  stow) require_tmux; cmd_stow "$@" ;;
-  handoff-workspace) require_tmux; cmd_handoff_workspace "$@" ;;
-  takeback-workspace) require_tmux; cmd_takeback_workspace "$@" ;;
-  recover) cmd_recover "$@" ;;
-  handback|takeback) cmd_takeback "$@" ;;
-  inspect) require_tmux; cmd_inspect "$@" ;;
-  offboard) require_tmux; cmd_offboard "$@" ;;
   peek) require_tmux; cmd_peek "$@" ;;
   send) require_tmux; cmd_send "$@" ;;
   press) require_tmux; cmd_press "$@" ;;
-  inbox) cmd_inbox "$@" ;;
-  ack) cmd_ack "$@" ;;
-  report) cmd_report "$@" ;;
-  watch) cmd_watch "$@" ;;
+  spawn) cmd_spawn "$@" ;;
+  onboard) require_tmux; cmd_onboard "$@" ;;
+  handoff) require_tmux; cmd_handoff "$@" ;;
+  handback) cmd_handback "$@" ;;
+  retire) cmd_retire "$@" ;;
   start) cmd_start "$@" ;;
+  scope) cmd_scope "$@" ;;
   reset) cmd_reset "$@" ;;
   *) usage >&2; die "unknown command '$command_name'" ;;
 esac

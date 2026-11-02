@@ -11,11 +11,11 @@ When you step away, hand continuing supervision to Ego.
 The prototype can:
 
 - Find live coding-agent panes across all tmux sessions through Agent Navigator process detection.
-- Register an existing window without restarting its agent.
+- Onboard an existing window without restarting its agent.
 - Open a named worker window in an existing workspace session.
 - Record whether Sandro or Ego currently owns supervision.
 - Store a handoff note and worker status history.
-- Inspect and send text to a registered pane.
+- Peek at and send text to a registered pane.
 - Press a restricted set of keys for an explicitly authorized terminal prompt.
 - Start a dedicated Ego agent in a tmux window.
 - Run several controllers at once, each with its own record and scope.
@@ -29,7 +29,7 @@ The prototype can:
 - Record each worker's live state in its handoff note.
 - Limit each command to the roles that should run it.
 - Give each worker its own startup context with its brief, inbox, and protocol.
-- Queue durable instructions and record worker acknowledgements.
+- Queue durable instructions and record which ones a worker has read.
 - Create an optional Git branch and worktree for a spawned agent.
 - Save a compact pre-reset workspace note and restart or resume a controller.
 
@@ -109,7 +109,7 @@ An optional secondary root uses `@workspace_secondary`.
 Clone or copy this private repository, then run from its root:
 
 ```sh
-./bin/ego install
+./install.sh
 ```
 
 Add Ego to the shell path in `~/.zshrc`, `~/.bashrc`, or the equivalent file:
@@ -119,13 +119,14 @@ export PATH="$HOME/.ego/bin:$PATH"
 ```
 
 Open a new shell or reload that configuration. The state directory is created on
-first use. If you skip `ego install`, the first `ego start` or `ego spawn` run
-from the repository installs Ego for you; later installs are always explicit.
+first use. If you skip `./install.sh`, the first `ego start` or `ego spawn` run
+from the repository runs it for you; later installs are always explicit.
 
 The installation lives under `~/.ego`: protected executable code is in `bin/`,
 controller instructions are in `CONTROLLER.md`, and mutable records are in
 `state/`. Set `EGO_ROOT` or `EGO_HOME` before installation to override these
-defaults.
+defaults, or `EGO_INSTALL_DIR` and `EGO_CONTROLLER_GUIDE` to move the command
+and the guide individually.
 
 ### 5. Configure the Codex rule
 
@@ -149,7 +150,7 @@ Start or attach to a tmux server, then check each layer:
 command -v ego
 ego --help
 ~/.local/share/agent-navigator/bin/agent-navigator list
-ego scan
+ego context
 ```
 
 Start the controller from a tmux session:
@@ -168,12 +169,12 @@ ego spawn planner --session ego-test --brief "Wait for instructions."
 
 To check the supervision path against real agents, run the live integration
 test from the repository. It uses an isolated tmux server and state directory,
-spawns each agent, and verifies that `scan`, `peek`, and `send` work:
+spawns each agent, and verifies that `context`, `peek`, and `send` work:
 
 ```sh
 bash tests/integration-agents.sh            # kiro, claude, and codex
 bash tests/integration-agents.sh kiro       # one agent
-bash tests/integration-agents.sh --strict   # also wait for the worker to ack and report
+bash tests/integration-agents.sh --strict   # also wait for the worker to read its inbox and report
 ```
 
 `--strict` requires the agent to run the `ego` command without a permission
@@ -185,7 +186,7 @@ After updating the repository, reinstall the protected copy and restart the
 controller:
 
 ```sh
-./bin/ego install
+./install.sh
 ```
 
 Ego never copies the repository over the installed copy on its own, so an
@@ -202,24 +203,28 @@ project-a:review
 project-b:optimizer
 ```
 
-Discover every supported coding-agent pane:
+Every `ego context` read discovers the supported coding-agent panes first:
 
 ```sh
-ego scan
+ego context
 ego list
 ```
 
-Detection uses the pane TTY foreground process group, not the window name. It recognizes Codex, Claude, Kiro, Gemini, Aider, and OpenCode. Register an unsupported custom agent explicitly:
+Detection uses the pane TTY foreground process group, not the window name. It recognizes Codex, Claude, Kiro, Gemini, Aider, and OpenCode. Add the reporting and inbox contract to an existing agent with:
 
 ```sh
-ego register project-a:review --id project-a-review
+ego onboard project-a:review
 ```
 
-Registering locates the agent but does not alter its prompt. Add the reporting and inbox contract to an existing agent with:
+Onboarding a window Ego has not recorded registers it first. For an unsupported
+custom agent, name its type and, optionally, its record id:
 
 ```sh
-ego onboard project-a-review
+ego onboard project-a:review --agent aider --id project-a-review
 ```
+
+`--root` sets the workspace directory Ego records for it. Onboarding a retired
+record brings it back into context.
 
 Onboard every active agent in one workspace session with:
 
@@ -232,14 +237,18 @@ The command scans first, skips agents that already report, and leaves ownership 
 The agent then reports material changes whether its owner is `human` or `ego`.
 It keeps its existing conversation and working directory. Onboarding sends one
 short instruction: run `ego context --agent <id>`. That prints the worker's own
-view: how to report, how to read and acknowledge instructions, its brief, its
-pending messages, its workspace note, and the other agents in its workspace. A
+view: how to report, how to read instructions, its brief, its pending messages,
+its workspace note, and the other agents in its workspace. A
 worker Ego spawned gets the same view from plain `ego context`, since its launch
 script exports its id. The protocol text lives in `bin/ego`, so updating Ego
 updates it for every worker without a respawn.
 
-`ego inspect <id>` is the controller's one-call look at an agent before acting:
-its handoff note, latest report, and last 60 pane lines. `ego handback` prints
+Withdraw the contract again with `ego onboard project-a-review --off`. The
+record stays, with reporting off.
+
+`ego peek <id>` is the controller's one-call look at an agent before acting:
+its handoff note while Ego owns it, latest report, and last 60 pane lines. Pass
+a line count for more history, as in `ego peek <id> 200`. `ego handback` prints
 the same bundle.
 
 ## Hand off an agent
@@ -255,7 +264,7 @@ It does not restart the worker or change its tmux window.
 
 Below your summary, the handoff note records the worker's state at that moment:
 its latest report, whether its agent process is running, Agent Navigator's
-screen observation, pending inbox messages, and the last 20 pane lines. The
+screen observation, unread inbox messages, and the last 20 pane lines. The
 command prints the same section, so a controller that runs the handoff for you
 sees a running process even when the summary does not mention it.
 
@@ -266,7 +275,7 @@ ego handback project-a--profile
 ```
 
 `handback` prints the latest durable worker report. When the controller handles
-the request, it also inspects the live pane and gives a short return brief. The
+the request, it also reads the live pane and gives a short return brief. The
 brief is expected controller behavior, not a model-generated feature of the
 ownership change itself.
 
@@ -286,8 +295,7 @@ Return every active agent in that workspace to human supervision with:
 ego handback project-a:
 ```
 
-Reporting stays enabled after handback. `takeback`, `handoff-workspace`,
-`takeback-workspace`, and `onboard-workspace` remain as older names.
+Reporting stays enabled after handback.
 
 ## Spawn an agent
 
@@ -369,15 +377,14 @@ Ego creates branch `ego/<agent-id>` and records the worktree path. Pass `--branc
 Instructions and reports use separate paths.
 
 - `ego send` writes an instruction into the agent's durable inbox and rings its tmux pane.
-- `ego inbox` lets the worker read pending instructions.
-- `ego ack` records that the worker handled an instruction.
+- `ego inbox` lets the worker read pending instructions and moves them to `inbox/handled/`.
 - `ego report` appends a material worker update to its status log.
 
 Reporting stays active during attended work. Handoff changes who must react and continue supervision. It does not turn reporting on.
 
 Ego checks who is calling. A worker, identified by the `EGO_AGENT_ID` its launch
-script exports, may only report, read and acknowledge its own inbox, and look at
-its own workspace; it can leave out its own id, as in `ego report done
+script exports, may only report, read its own inbox, and look at its own
+workspace; it can leave out its own id, as in `ego report done
 "tests pass"`, and may not name another agent's. Supervision commands such as
 `handoff`, `press`, `retire`, `spawn`, and `watch` refuse a worker. A controller
 cannot start another controller or add a workspace to its own scope. Commands
@@ -390,7 +397,7 @@ replay an old log.
 
 Every event records the session it belongs to, so a controller wakes only for
 the workspaces its scope lists. An event that names no session, such as a
-fleet-wide `scan`, reaches every controller.
+fleet-wide scan event, reaches every controller.
 
 ## Clean up agents and workspaces
 
@@ -422,12 +429,12 @@ ego retire --stale                # every cleanup candidate in scope
 ego retire --controller Main--ego # a controller record
 ```
 
-A retired record leaves context and stays on disk. Registering or spawning the
+A retired record leaves context and stays on disk. Onboarding or spawning the
 same id again brings it back, and a later scan does not undo a retirement.
-`ego purge <id>` removes an agent's record directory, including its brief,
-handoff, status log, and inbox, and refuses while the pane is still live.
+`ego retire --purge <id>` removes an agent's record directory, including its
+brief, handoff, status log, and inbox, and refuses while the pane is still live.
 Ego never closes a tmux window, deletes a working directory, or removes a
-worktree. `forget`, `prune`, and `archive-workspace` remain as older names.
+worktree.
 
 Use `ego list` to see the difference: the `STATE` column reads `live` or
 `missing` from tmux, the `PROCESS` column says whether the last scan found an
@@ -477,7 +484,7 @@ ego context --session project-b
 ```
 
 Scope is also a limit, not only a display filter. A controller is refused when
-it tries to peek, send, spawn, checkpoint, or hand off in a workspace its scope
+it tries to peek, send, spawn, onboard, or hand off in a workspace its scope
 does not list. `--any-session` is the deliberate override, for a request from Sandro
 that names another workspace:
 
@@ -498,8 +505,7 @@ ego scope project-a--ego project-a,project-b
 To let one controller take over another workspace, add the workspace to its
 scope and close the other workspace's controller; the next scan retires that
 record. To go back, `ego start` in that workspace again. A controller that
-spawns into a brand-new session gets that session added to its scope. `ego
-promote` remains as the older name.
+spawns into a brand-new session gets that session added to its scope.
 
 Ego can see registered agents in every session on the same tmux server.
 You do not need one Ego process per workspace.
@@ -526,7 +532,7 @@ List the controllers and their launch paths with:
 ego list --controllers
 ```
 
-Ego may also start later. Use `ego scan` and `ego onboard`, or `ego onboard <session>:`, to add agents that already exist.
+Ego may also start later. Use `ego context` and `ego onboard`, or `ego onboard <session>:`, to add agents that already exist.
 
 ## More than one controller
 
@@ -536,7 +542,7 @@ does not stop or demote an old one. Each has its own record under
 later one starts. Every controller still reads and writes the same agent and
 workspace records.
 
-A pane is a controller or a worker, never both. `ego scan` excludes every live
+A pane is a controller or a worker, never both. A scan excludes every live
 controller pane from its agent list, and retires any agent record that claims a
 controller's pane. A controller whose pane is gone is retired by the next scan.
 
@@ -563,8 +569,7 @@ ego reset AgentOrchestrator--ego \
 
 That writes the note for every workspace the controller covers and prints the
 command that restarts it. A controller resetting itself leaves out its id.
-`checkpoint` and `stow` remain as older names that write the note for one
-session. Read the note and current agents later:
+Read the note and current agents later:
 
 ```sh
 ego context --full --session AgentOrchestrator
@@ -631,5 +636,5 @@ The notice can still collide with unfinished input. Inspect the pane first with 
 
 The prototype never closes a window or deletes a working directory.
 That is intentional while the handoff workflow is still being tested.
-`ego purge` is the one command that deletes anything, and it only
+`ego retire --purge` is the one command that deletes anything, and it only
 removes Ego's own record of an agent whose pane is already gone.

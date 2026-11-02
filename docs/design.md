@@ -32,7 +32,7 @@ explicitly, at start or with `ego scope`, and a controller that spawns into a
 brand-new session gets that session added, so it keeps reach over what it
 created. There is no implicit whole-server scope: a controller over several
 workspaces names them. Scope bounds what a controller reads,
-wakes for, and may touch. It does not bound what `ego scan` records: keeping the
+wakes for, and may touch. It does not bound what a scan records: keeping the
 fleet record complete costs one tmux call and preserves cross-session handoff on
 request. Every context read names its scope so the controller knows it is seeing
 a subset.
@@ -47,7 +47,7 @@ at call time, `ego scope` changes it without a restart. An older record holding
 `session` reads as its own session, and one holding `server` as every session,
 until it is rewritten.
 
-A pane is a controller or a worker, never both. `ego scan` excludes every live
+A pane is a controller or a worker, never both. A scan excludes every live
 controller pane and retires any agent record that claims one, so a controller
 from an earlier session is never adopted as a worker.
 
@@ -60,8 +60,8 @@ intended.
 
 Roles bound commands the way scope bounds sessions. Each invocation is a
 controller, a worker, or Sandro, resolved in the same order as scope, and one
-table in the dispatcher lists what each may run. A worker reports, reads and
-acknowledges only its own inbox, with its id implied, and reads context, the
+table in the dispatcher lists what each may run. A worker reports and reads
+only its own inbox, with its id implied, and reads context, the
 agent list, and sibling panes in its own workspace; it cannot hand off, press
 keys, retire, spawn, watch, or use `--any-session`. A controller runs every
 command within its scope but cannot start another controller or widen its own
@@ -71,7 +71,7 @@ agent tool's permission profile, so it is the same for Claude, Codex, and Kiro.
 
 Events carry the session they belong to, so `ego watch` wakes a controller only
 for the workspaces its scope lists. An event with no session, such as a fleet
-`scan`, reaches every controller. Each caller keeps its own cursor, so one
+scan event, reaches every controller. Each caller keeps its own cursor, so one
 controller consuming an event cannot hide it from another. Two controllers whose
 scopes list the same session still both wake for its events, so each session is
 covered by one controller at a time.
@@ -85,22 +85,24 @@ reports because its launch prompt or onboarding message told it to.
 Discovery delegates identity to Agent Navigator. It matches recognized processes in each pane TTY's foreground process group, so window names are irrelevant and suspended background agents are excluded. Ego joins the detected pane IDs with its tmux inventory and excludes every live controller pane.
 
 An Ego spawn records `origin=ego`, starts with `owner=ego`, and its launch prompt tells it to run `ego context`. For a worker, that command prints its own view: the reporting contract, its brief, pending instructions, its workspace note, and its siblings. The contract lives in `bin/ego`, not in each prompt, so it changes without respawning anyone and a pasted onboarding message stays one line. A discovered worker starts human-owned and does not report until it is onboarded; its onboarding message tells it to run `ego context --agent <id>`, because Ego did not launch it and it has no `EGO_AGENT_ID`.
-`onboard-workspace` scans the tmux server and sends that contract to every active, non-reporting worker in one session. It leaves ownership unchanged and does not resend the contract to workers already reporting.
+`ego onboard <session>:` scans the tmux server and sends that contract to every active, non-reporting worker in one session. It leaves ownership unchanged and does not resend the contract to workers already reporting. `ego onboard <id> --off` withdraws the contract and keeps the record.
+
+Reading the inbox is what handles a message: `ego inbox` prints the pending messages and moves each one to `inbox/handled/`. A handoff counts the messages a worker has not read yet as unread.
 
 ## Recovery
 
 The files under `EGO_HOME`, normally `~/.ego/state`, hold the durable records.
 The tmux server holds the running processes.
-`ego scan` joins those two views after Ego starts or restarts.
+Every `ego context` read joins those two views, so the first read after Ego starts or restarts rebuilds them.
 
 Each workspace also has a checkpoint file.
 It records the current state and next action without requiring a model to stay alive.
-`handoff-workspace` changes every registered agent in that session to Ego ownership and writes the checkpoint in one command.
+`ego handoff <session>:` changes every registered agent in that session to Ego ownership and writes the checkpoint in one command.
 
 The first prototype does not import a model's private conversation history.
 The handoff note records the information needed for another supervisor to continue.
 
-Before an intentional controller reset, `ego reset --note` writes the workspace note for every session the controller covers, holding only the volatile delta and next action that exist nowhere else. Briefs, status logs, handoffs, and metadata remain authoritative and should not be copied into it. A replacement controller starts with `ego context`, which prints the note, and uses `context --full` only when needed. `reset` never ends the controller's process: it prints the launch script, which restarts the same identity with a fresh conversation, or resumes the most recent one with `--continue`. `checkpoint` and `stow` remain as older names that write the same note for one session.
+Before an intentional controller reset, `ego reset --note` writes the workspace note for every session the controller covers, holding only the volatile delta and next action that exist nowhere else. Briefs, status logs, handoffs, and metadata remain authoritative and should not be copied into it. A replacement controller starts with `ego context`, which prints the note, and uses `context --full` only when needed. `reset` never ends the controller's process: it prints the launch script, which restarts the same identity with a fresh conversation, or resumes the most recent one with `--continue`.
 
 ## Retirement
 
@@ -116,8 +118,8 @@ when it was created after the running server started. The same rule retires a
 controller record whose pane is gone, which also removes that controller's event
 cursor.
 
-Every `ego context` read begins with that scan, so retirement does not depend on
-anyone running `ego scan`. A scan logs an event only when it recorded or retired
+Every `ego context` read begins with that scan, so retirement needs no separate
+command. A scan logs an event only when it recorded or retired
 something. Workspace records are written only from live sessions; a scan marks a
 record `live=no` when its session is gone, and a workspace is in context exactly
 while its session is live.
@@ -126,9 +128,9 @@ A scan cannot judge a window left open after its agent exited. `ego list
 --stale` names those candidates and prints the `tmux kill-window` line that would
 close each one, and `ego retire` takes one agent, a `session:` workspace, every
 candidate in scope, or a controller. Retirement is deliberate, so a refresh
-preserves it. Only `register` and `spawn` return a record to active context.
+preserves it. Only `onboard` and `spawn` return a record to active context.
 
-`ego purge` is the single operation in the prototype that deletes anything. It
+`ego retire --purge` is the single operation in the prototype that deletes anything. It
 removes Ego's bookkeeping for an agent whose pane is already gone, never a
 window, a directory, or a worktree.
 
@@ -147,9 +149,9 @@ normally waits until the controller or Sandro sends another instruction.
 
 Ego has no background telemetry hook. A spawned or onboarded worker reports by calling `ego report` at material phase changes. The watcher reads Ego's event log rather than scraping every agent conversation.
 
-Agent Navigator adds on-demand process and screen observation during `ego scan`. It can identify a live agent and estimate `working`, `blocked`, `idle`, or `unknown`, but that estimate does not replace a worker report.
+Agent Navigator adds on-demand process and screen observation during each scan. It can identify a live agent and estimate `working`, `blocked`, `idle`, or `unknown`, but that estimate does not replace a worker report.
 
-A pane can outlive the agent that ran in it. `scan` records `process=yes` or
+A pane can outlive the agent that ran in it. A scan records `process=yes` or
 `process=no` from the detection set rather than retiring such a record, because
 starting an agent in the same pane again reuses the same pane id. Pane liveness
 and process presence are separate columns in `ego list`.

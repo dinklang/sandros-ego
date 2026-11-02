@@ -20,8 +20,8 @@ agents in it may be gone by the time you act. Re-read it rather than trusting a
 stale table.
 
 Scope is enforced, not only displayed. `peek`, `send`, `press`, `spawn`,
-`handoff`, `handback`, `onboard`, `register`, `retire`, and every `session:`
-target refuse a session your scope does not list.
+`handoff`, `handback`, `onboard`, `retire`, and every `session:` target refuse
+a session your scope does not list.
 `--any-session` overrides the refusal. Use it only when Sandro has named
 the other workspace. A refusal is not a reason to add it: without that
 instruction, report the boundary instead of crossing it.
@@ -64,16 +64,17 @@ agent, use his name verbatim. `ego spawn` refuses names longer than 3 parts or
 24 characters.
 
 The `owner` field records who must supervise without another prompt. Do not
-autonomously steer a human-owned agent. You may inspect it, answer questions
+autonomously steer a human-owned agent. You may peek at it, answer questions
 about it, and steer it when Sandro asks. All reporting-enabled agents report
 material phase changes regardless of owner.
 
 Only a controller runs `watch` and the supervision commands. Ego enforces the
-split: a worker may report, read and acknowledge its own inbox, read context
-and the agent list for its own workspace, and peek at a sibling there, and every
-other command refuses it. Workers read their brief, check their own inbox at
-natural checkpoints, acknowledge handled messages, and report material phase
-changes.
+split: a worker may report, read its own inbox, read context and the agent list
+for its own workspace, and peek at a sibling there, and every other command
+refuses it. Workers read their brief, check their own inbox at natural
+checkpoints, and report material phase changes. Reading the inbox marks those
+messages handled, so `ego inbox <id>` on a worker's behalf takes them out of
+its pending list.
 An agent with no assignment reports `idle`, not `blocked`. `done` means its
 assigned scope is complete, even when the broader project has a later external
 gate. `blocked` means the assigned scope cannot proceed.
@@ -91,7 +92,6 @@ Use these commands:
 ego context
 ego list
 ego list --stale
-ego inspect <id>
 ego peek <id>
 ego send <id> '<message>'
 ego press <id> <enter|escape|y|n|p>
@@ -99,7 +99,7 @@ ego watch 300
 ```
 
 `send` queues a durable instruction for the worker. It does not answer a
-terminal approval prompt. After inspecting a visible prompt with `peek`, use
+terminal approval prompt. After reading a visible prompt with `peek`, use
 `press` only when Sandro has authorized that exact action or a clear class of
 in-scope actions. Never guess which key an interface expects.
 
@@ -109,16 +109,19 @@ also accept `session:` for every active agent in that workspace.
 
 Use `ego onboard <session>:` to enroll every active worker in one tmux
 workspace in reporting without changing ownership. `ego onboard <window>`
-registers a window Ego has not recorded yet.
+registers a window Ego has not recorded yet; add `--agent <type>` for an agent
+Ego cannot detect, and `--id <id>` to name its record. `ego onboard <id> --off`
+withdraws the reporting contract and keeps the record.
 
 For an Ego-owned agent:
 
 1. Read its handoff note. Its "Worker state at handoff" section shows what the
    worker was doing when it was handed off, including a running process the
    summary may not mention.
-2. Run `ego inspect <id>` before sending anything. It prints the handoff note,
+2. Run `ego peek <id>` before sending anything. It prints the handoff note,
    the latest report, and the last 60 pane lines in one call. Read more pane
-   history only when those do not explain the current state.
+   history with `ego peek <id> <lines>` only when those do not explain the
+   current state.
 3. Preserve the workflow Sandro already established.
 4. Ask Sandro about product choices, destructive operations, credentials, or an
    unclear change in scope.
@@ -126,10 +129,10 @@ For an Ego-owned agent:
 6. Do not merge, delete work, close a tmux window, or remove a worktree without
    Sandro's explicit instruction.
 
-Do not run `recover` immediately after writing a handoff that already contains
-the needed state. Use `recover` for missing or unclear workspace context. Avoid
-repeated full `context` reads when a report, handoff, or targeted `peek` answers
-the question.
+Do not run `ego context --full` immediately after writing a handoff that
+already contains the needed state. Use it for missing or unclear workspace
+context. Avoid repeated full `context` reads when a report, handoff, or targeted
+`peek` answers the question.
 
 The tmux pane is not durable memory. Write material supervision facts to the
 agent's handoff or status files. Before an intentional reset or replacement,
@@ -165,12 +168,13 @@ exited, with the `tmux kill-window` command Sandro could run. Retire a record
 with `ego retire <id|session:window>`, every agent in a workspace with `ego
 retire <session>:`, every candidate in scope with `ego retire --stale`, or a
 dead controller with `ego retire --controller <id>`. Retire only what Sandro
-asked to clean up. A retired record stays on disk and returns with `register` or
-`spawn`. Use `ego purge <id>` only when Sandro asks for the record itself to be
-removed. None of these touch a tmux window, a working directory, or a worktree.
+asked to clean up. A retired record stays on disk and returns with `onboard` or
+`spawn`. Use `ego retire --purge <id>` only when Sandro asks for the record
+itself to be removed. None of these touch a tmux window, a working directory, or
+a worktree.
 
 For every handback request, run `ego handback <id>`: it changes ownership and
-prints the same bundle as `ego inspect`, which is the material for the return
+prints the same bundle as `ego peek`, which is the material for the return
 brief. After handback, always give Sandro a short
 return brief with the current state, the latest result or blocker, and the next
 known action. Do not enter another watch interval after handback unless Sandro
