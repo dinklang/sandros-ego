@@ -3,7 +3,7 @@
 #
 # Controllers and workers run the installed copy, never the repository. That
 # keeps an uncommitted or half-finished edit here from going live on its own,
-# and gives the Codex rule one fixed executable path to allow. Run this again
+# and gives permission rules one fixed executable path to allow. Run this again
 # after pulling or merging changes to bin/ego or CONTROLLER.md; until then
 # 'ego start' and 'ego context' warn that the installed copy differs.
 #

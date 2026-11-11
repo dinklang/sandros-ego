@@ -101,26 +101,33 @@ Persist that export in the machine's shell configuration.
 
 ### 3. Configure the workspace root
 
-Create the directory that will contain project workspaces:
+Ego creates new workspaces under the directory in the tmux option
+`@workspace_primary`. Choose the directory that will contain project
+workspaces, such as `~/workplace` or `~/Work`, depending on the user's
+preference. Use one that already exists when there is an obvious candidate;
+otherwise ask the user. Create it if it does not exist:
 
 ```sh
 mkdir -p "$HOME/Work"
 ```
 
-Add the setting to `~/.tmux.conf` or the machine's active tmux configuration:
+Add the setting to `~/.tmux.conf` or the machine's active tmux configuration,
+using the chosen directory:
 
 ```tmux
 set -g @workspace_primary "$HOME/Work"
 ```
 
-If a tmux server is already running, apply it there too. `tmux set-option`
-fails when no server is running; the next server reads the configuration file.
+An optional second root uses `@workspace_secondary`. Ego labels sessions under
+it `secondary` instead of `external`.
+
+If a tmux server is already running, apply the setting there too. `tmux
+set-option` fails when no server is running; the next server reads the
+configuration file.
 
 ```sh
 tmux set-option -g @workspace_primary "$HOME/Work"
 ```
-
-An optional secondary root uses `@workspace_secondary`.
 
 ### 4. Install Ego
 
@@ -148,25 +155,11 @@ controller instructions are in `CONTROLLER.md`, and mutable records are in
 defaults, or `EGO_INSTALL_DIR` and `EGO_CONTROLLER_GUIDE` to move the command
 and the guide individually.
 
-### 5. Configure the Codex rule
+Controllers and workers run `~/.ego/bin/ego` constantly. Allow that executable
+in each agent tool's own permission settings, or expect a prompt on every
+report.
 
-Copy `.example-codex-rule` into a `.rules` file under `~/.codex/rules/`. Replace
-`/ABSOLUTE/HOME` with the machine's absolute home directory, then restart Codex:
-
-```sh
-mkdir -p "$HOME/.codex/rules"
-cp .example-codex-rule "$HOME/.codex/rules/ego.rules"
-```
-
-The rule path must be absolute. Codex matches command prefixes literally. The
-rule lets the protected Ego command reach tmux without granting every tmux
-command access outside the sandbox.
-
-Claude Code and Kiro CLI have no equivalent file in this repository. Workers
-and controllers call `~/.ego/bin/ego` constantly, so allow that executable in
-each tool's own permission settings, or expect a prompt on every report.
-
-### 6. Verify the installation
+### 5. Verify the installation
 
 Start or attach to a tmux server, then check each layer:
 
@@ -183,8 +176,8 @@ Start the controller from a tmux session:
 ego start
 ```
 
-To test automatic workspace creation, this command creates
-`$HOME/Work/ego-test`, creates the `ego-test` tmux session, and starts a worker
+To test automatic workspace creation, this command creates `ego-test` under
+`@workspace_primary`, creates the `ego-test` tmux session, and starts a worker
 window there:
 
 ```sh
@@ -616,8 +609,8 @@ Ego reads the tmux options already used by your configuration:
 ```
 
 It labels each recorded session as `primary`, `secondary`, or `external` based on its `session_path`.
-The dotfiles tmux templates set `@workspace_primary` to `~/workplace` and `@workspace_secondary` to `~/Work` when `~/workplace` exists (Brazil machines).
-Otherwise `@workspace_primary` is `~/Work` and the secondary root is unset.
+A common setup is `@workspace_primary` set to `~/workplace` or `~/Work`, with
+the other as `@workspace_secondary` when both are in use.
 
 ## Files and locations
 
