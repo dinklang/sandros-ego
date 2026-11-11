@@ -66,26 +66,35 @@ git --version
 
 ### 2. Install Agent Navigator
 
-Ego uses Agent Navigator to find agent processes across tmux panes. Its source
-lives in the dotfiles repository
-([dinklang/dotfiles](https://github.com/dinklang/dotfiles), `agent-navigator/`):
+Ego uses [Agent Navigator](https://github.com/dinklang/agent-navigator) to find
+agent processes across tmux panes. It is a tmux plugin. With
+[TPM](https://github.com/tmux-plugins/tpm), add it to `~/.tmux.conf` and press
+`prefix + I`:
 
-```sh
-git clone git@github.com:dinklang/dotfiles.git
-cd dotfiles/agent-navigator
-./install.sh
+```tmux
+set -g @plugin 'dinklang/agent-navigator'
 ```
 
-The default executable is:
+Without TPM, clone it to the same place and load it from `~/.tmux.conf`:
+
+```sh
+git clone https://github.com/dinklang/agent-navigator.git ~/.tmux/plugins/agent-navigator
+```
+
+```tmux
+run-shell ~/.tmux/plugins/agent-navigator/agent-navigator.tmux
+```
+
+Ego finds the helper at:
 
 ```text
-~/.local/share/agent-navigator/bin/agent-navigator
+~/.tmux/plugins/agent-navigator/scripts/agent-navigator
 ```
 
 For another location, export its absolute path:
 
 ```sh
-export EGO_AGENT_NAVIGATOR=/path/to/agent-navigator/bin/agent-navigator
+export EGO_AGENT_NAVIGATOR=/path/to/agent-navigator/scripts/agent-navigator
 ```
 
 Persist that export in the machine's shell configuration.
@@ -164,7 +173,7 @@ Start or attach to a tmux server, then check each layer:
 ```sh
 command -v ego
 ego --help
-~/.local/share/agent-navigator/bin/agent-navigator list
+~/.tmux/plugins/agent-navigator/scripts/agent-navigator list
 ego context
 ```
 

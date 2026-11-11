@@ -1028,6 +1028,7 @@ agent_navigator_path() {
     return 0
   fi
   for candidate in \
+    "$HOME/.tmux/plugins/agent-navigator/scripts/agent-navigator" \
     "$HOME/.local/share/agent-navigator/bin/agent-navigator" \
     "$HOME/Work/tmuxShi/agent-navigator/bin/agent-navigator"; do
     if [ -x "$candidate" ]; then

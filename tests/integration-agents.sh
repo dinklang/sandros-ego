@@ -36,7 +36,13 @@ SESSION=ego-it
 export EGO_HOME="$TMP/state"
 export EGO_TMUX_SOCKET="$SOCKET"
 EGO="$ROOT/bin/ego"
-NAVIGATOR=${EGO_AGENT_NAVIGATOR:-$HOME/.local/share/agent-navigator/bin/agent-navigator}
+NAVIGATOR=${EGO_AGENT_NAVIGATOR:-}
+if [ -z "$NAVIGATOR" ]; then
+  for candidate in "$HOME/.tmux/plugins/agent-navigator/scripts/agent-navigator" \
+    "$HOME/.local/share/agent-navigator/bin/agent-navigator"; do
+    [ -x "$candidate" ] && { NAVIGATOR=$candidate; break; }
+  done
+fi
 [ -x "$NAVIGATOR" ] || { printf 'Agent Navigator not found at %s\n' "$NAVIGATOR" >&2; exit 2; }
 
 PASS=0
