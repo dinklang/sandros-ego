@@ -5,7 +5,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TMP=$(mktemp -d)
 SOCKET="ego-test-$$"
 
-test "$(rg -c "printf 'exec codex --sandbox workspace-write --add-dir" "$ROOT/bin/ego")" -eq 1
+test "$(grep -c "printf 'exec codex --sandbox workspace-write --add-dir" "$ROOT/bin/ego")" -eq 1
 grep -q "printf 'exec kiro-cli chat" "$ROOT/bin/ego"
 # --add-dir is variadic in Claude Code and swallows a trailing prompt.
 grep -q "printf 'exec claude %s --add-dir %s" "$ROOT/bin/ego"

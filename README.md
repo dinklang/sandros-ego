@@ -1,5 +1,7 @@
 # Sandro's Ego
 
+It's called Ego because my input is valuable enough that I stay in the loop with my agents.
+
 Sandro's Ego is a small tmux agent supervisor built for a human-led workflow.
 
 You can create sessions, windows, agents, and experimental workflows yourself.
@@ -33,8 +35,9 @@ The prototype can:
 - Create an optional Git branch and worktree for a spawned agent.
 - Save a compact pre-reset workspace note and restart or resume a controller.
 
-It does not merge code, remove windows, or remove worktrees. Agent Navigator's screen status is only an observation, never a durable worker report.
-Those can be added after the handoff model works well in daily use.
+It does not merge code, remove windows, or remove worktrees. Those can be added
+after the handoff model works well in daily use. Agent Navigator's screen status
+is only an observation, never a durable worker report.
 
 ## First-time installation
 
@@ -50,7 +53,8 @@ Install these prerequisites using the method appropriate for your environment:
 - tmux
 - Git
 - Standard Unix tools such as `awk`, `sed`, `find`, and `mktemp`
-- Codex, Claude Code, Kiro CLI, or another agent CLI
+- Codex, Claude Code, Kiro CLI, or another agent CLI. Ego runs them as `codex`,
+  `claude`, and `kiro-cli`, so those names must be on `PATH`.
 
 Verify that the required commands are available before installing Ego:
 
@@ -88,27 +92,34 @@ Persist that export in the machine's shell configuration.
 
 ### 3. Configure the workspace root
 
-Create the directory that will contain project workspaces and configure tmux:
+Create the directory that will contain project workspaces:
 
 ```sh
 mkdir -p "$HOME/Work"
-tmux set-option -g @workspace_primary "$HOME/Work"
 ```
 
-Add the persistent setting to `~/.tmux.conf` or the machine's active tmux
-configuration:
+Add the setting to `~/.tmux.conf` or the machine's active tmux configuration:
 
 ```tmux
 set -g @workspace_primary "$HOME/Work"
+```
+
+If a tmux server is already running, apply it there too. `tmux set-option`
+fails when no server is running; the next server reads the configuration file.
+
+```sh
+tmux set-option -g @workspace_primary "$HOME/Work"
 ```
 
 An optional secondary root uses `@workspace_secondary`.
 
 ### 4. Install Ego
 
-Clone or copy this private repository, then run from its root:
+Clone this private repository, then run the installer from its root:
 
 ```sh
+git clone git@github.com:dinklang/sandros-ego.git
+cd sandros-ego
 ./install.sh
 ```
 
@@ -141,6 +152,10 @@ cp .example-codex-rule "$HOME/.codex/rules/ego.rules"
 The rule path must be absolute. Codex matches command prefixes literally. The
 rule lets the protected Ego command reach tmux without granting every tmux
 command access outside the sandbox.
+
+Claude Code and Kiro CLI have no equivalent file in this repository. Workers
+and controllers call `~/.ego/bin/ego` constantly, so allow that executable in
+each tool's own permission settings, or expect a prompt on every report.
 
 ### 6. Verify the installation
 
